@@ -1,0 +1,39 @@
+{
+  "name": "ceki-browser",
+  "version": "0.1.0",
+  "description": "TypeScript SDK for browser.ceki.me — rent real browsers of real people",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": ["dist"],
+  "keywords": ["browser", "automation", "websocket", "rpc", "ai-agent", "ceki"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Ceki-me/js-sdk"
+  },
+  "homepage": "https://browser.ceki.me",
+  "author": "Ceki.me <hello@ceki.me>",
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "tsup": "^8.0.0",
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0",
+    "@types/ws": "^8.5.0"
+  }
+}
