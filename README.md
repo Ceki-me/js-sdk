@@ -81,6 +81,37 @@ Create secrets via dashboard: **API Keys & Secrets** section.
 | `HumanActionDeclined` | Browser owner declined the action |
 | `HumanActionTimeout` | Browser owner didn't respond in time |
 
+## Chat
+
+During a browser session, your agent can exchange messages with the browser provider via `session.chat`. The chat channel opens automatically when the session starts.
+
+```ts
+import { Browser } from 'ceki-browser';
+import { readFileSync } from 'fs';
+
+const br = new Browser({ token: 'YOUR_TOKEN' });
+await br.connect();
+const session = await br.openSession({ mode: 'incognito', domainHints: ['example.com'] });
+
+// Listen for incoming messages from the provider
+session.chat.onMessage((msg) => {
+  console.log(`Provider says: ${msg.content}`);
+});
+
+// Send a message
+await session.chat.send('Starting automation, please do not close the browser');
+
+// Send a screenshot
+const png = readFileSync('screenshot.png');
+await session.chat.sendImage(png, 'image/png');
+
+// Fetch message history
+const history = await session.chat.history({ limit: 20 });
+
+await session.close();
+await br.close();
+```
+
 ## Examples
 
 - [`quickstart.ts`](examples/quickstart.ts) — minimal example

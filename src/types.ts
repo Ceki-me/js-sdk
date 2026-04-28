@@ -38,6 +38,22 @@ export interface BrowserOptions {
   relayUrl?: string;
 }
 
+export interface ChatMessage {
+  _id: string;
+  topic_id: string;
+  author_id: number;
+  author_name: string;
+  type: 'text' | 'image' | 'file';
+  content: string;
+  media?: { url: string; mime: string; name: string; size?: number } | null;
+  created_at: string;
+}
+
+export interface TypingEvent {
+  user_id: number;
+  is_typing: boolean;
+}
+
 export interface JsonRpcMessage {
   jsonrpc: '2.0';
   method?: string;

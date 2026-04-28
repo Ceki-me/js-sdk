@@ -1,4 +1,5 @@
 import { randomUUID } from 'crypto';
+import { ChatAPI } from './chat.js';
 import { CekiBrowserError } from './errors.js';
 import type { Transport, EventCallback } from './transport.js';
 import type {
@@ -15,6 +16,7 @@ export class Session {
   private _sessionId: string | null = null;
   private _mode: string;
   private _active = false;
+  private _chat: ChatAPI | null = null;
 
   constructor(transport: Transport, requestId: string, mode: string) {
     this._transport = transport;
@@ -28,6 +30,13 @@ export class Session {
 
   get active(): boolean {
     return this._active;
+  }
+
+  get chat(): ChatAPI {
+    if (!this._chat) {
+      this._chat = new ChatAPI(this._transport, this._sessionId ?? this._requestId, null);
+    }
+    return this._chat;
   }
 
   async waitForActive(timeout = 60000): Promise<void> {
@@ -46,8 +55,9 @@ export class Session {
           if (state === 'ACTIVE') {
             this._sessionId = sid;
             this._active = true;
+            this._chat = new ChatAPI(this._transport, sid, null);
+            this._installChatHandler();
             clearTimeout(timer);
-            this._transport.onEvent(originalCb!);
             resolve();
           } else if (state === 'ENDED' || state === 'ENDING') {
             clearTimeout(timer);
@@ -58,8 +68,9 @@ export class Session {
         if (method === 'session.started') {
           this._sessionId = (params.session_id ?? '') as string;
           this._active = true;
+          this._chat = new ChatAPI(this._transport, this._sessionId, null);
+          this._installChatHandler();
           clearTimeout(timer);
-          this._transport.onEvent(originalCb!);
           resolve();
         }
         if (originalCb) originalCb(method, params);
@@ -180,6 +191,25 @@ export class Session {
     } catch {
       // best-effort
     }
+  }
+
+  private _installChatHandler(): void {
+    const originalCb = (this._transport as unknown as { _eventCallback: EventCallback | null })._eventCallback;
+
+    const handler: EventCallback = (method, params) => {
+      if (method === 'chat.topic_created' && this._chat) {
+        const topicId = params.chat_topic_id as string;
+        if (topicId) this._chat._setTopicId(topicId);
+      } else if (method === 'chat.message' && this._chat) {
+        this._chat._dispatchMessage(params);
+      } else if (method === 'chat.typing' && this._chat) {
+        this._chat._dispatchTyping(params);
+      }
+
+      if (originalCb) originalCb(method, params);
+    };
+
+    this._transport.onEvent(handler);
   }
 
   private _checkActive(): void {
