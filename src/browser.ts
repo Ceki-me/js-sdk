@@ -48,10 +48,12 @@ export class Browser {
     if (options.geo) params.geo = options.geo;
     if (options.language) params.language = options.language;
 
-    const result = (await this._transport.send('session.request', params, 30000)) as Record<string, unknown>;
-    const requestId = (result?.request_id ?? '') as string;
+    const session = new Session(this._transport, '', params.mode as string);
+    session.installMatchListener();
 
-    const session = new Session(this._transport, requestId, params.mode as string);
+    const result = (await this._transport.send('session.request', params, 30000)) as Record<string, unknown>;
+    session.requestId = (result?.request_id ?? '') as string;
+
     await session.waitForActive(options.waitTimeout ?? 60000);
     return session;
   }
