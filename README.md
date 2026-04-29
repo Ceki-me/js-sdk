@@ -81,36 +81,54 @@ Create secrets via dashboard: **API Keys & Secrets** section.
 | `HumanActionDeclined` | Browser owner declined the action |
 | `HumanActionTimeout` | Browser owner didn't respond in time |
 
+## P2P Transport
+
+All browser commands (`navigate`, `query`, `click`, etc.) are sent via a direct WebRTC peer-to-peer connection to the provider's browser. The SDK automatically:
+
+1. Negotiates WebRTC offer/answer through the relay WebSocket
+2. Establishes a direct DataChannel (`ceki-cmd`) for JSON-RPC commands
+3. Opens a second DataChannel (`ceki-chat`) for ephemeral text/image chat
+
+No browser data passes through the relay server — only signaling.
+
 ## Chat
 
-During a browser session, your agent can exchange messages with the browser provider via `session.chat`. The chat channel opens automatically when the session starts.
+During a session, your agent can exchange text and image messages with the browser provider via `session.chat`. The P2P chat channel opens automatically after the WebRTC connection is established.
 
 ```ts
 import { Browser } from 'ceki-browser';
+import type { ChatTextMessage, ChatImage } from 'ceki-browser';
 import { readFileSync } from 'fs';
 
 const br = new Browser({ token: 'YOUR_TOKEN' });
 await br.connect();
 const session = await br.openSession({ mode: 'incognito', domainHints: ['example.com'] });
 
-// Listen for incoming messages from the provider
-session.chat.onMessage((msg) => {
-  console.log(`Provider says: ${msg.content}`);
+// Listen for incoming text messages
+session.chat.onMessage((msg: ChatTextMessage) => {
+  console.log(`[${msg.from}] ${msg.text}`);
 });
 
-// Send a message
-await session.chat.send('Starting automation, please do not close the browser');
+// Listen for incoming images
+session.chat.onImage((img: ChatImage) => {
+  console.log(`Image received: ${img.mime}, ${img.data.byteLength} bytes`);
+});
 
-// Send a screenshot
+// Send a text message
+session.chat.send('Starting automation, please do not close the browser');
+
+// Send an image (Uint8Array, ArrayBuffer, or base64 string)
 const png = readFileSync('screenshot.png');
 await session.chat.sendImage(png, 'image/png');
 
-// Fetch message history
-const history = await session.chat.history({ limit: 20 });
+// Access message history (in-memory, current session only)
+const history = session.chat.history;
 
 await session.close();
 await br.close();
 ```
+
+Images are chunked (12 KB per chunk) and reassembled automatically. Max image size: 5 MB. Session memory cap: 50 MB (oldest images evicted first).
 
 ## Examples
 

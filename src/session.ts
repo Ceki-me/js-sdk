@@ -1,7 +1,8 @@
 import { randomUUID } from 'crypto';
-import { ChatAPI } from './chat.js';
 import { CekiBrowserError, NoMatchError, SessionEndedError } from './errors.js';
 import type { Transport, EventCallback } from './transport.js';
+import { RTCTransport } from './transport-rtc.js';
+import type { ChatTextMessage, ChatImage } from './transport-rtc.js';
 import type {
   HtmlResult,
   HumanActionResult,
@@ -10,18 +11,58 @@ import type {
   ScreenshotResult,
 } from './types.js';
 
+export class P2PChatAPI {
+  private _rtc: RTCTransport;
+
+  constructor(rtc: RTCTransport) {
+    this._rtc = rtc;
+  }
+
+  get available(): boolean {
+    return this._rtc.chatChannel.readyState === 'open';
+  }
+
+  send(text: string): void {
+    this._rtc.sendChatText(text);
+  }
+
+  async sendImage(data: Uint8Array | ArrayBuffer | string, mime?: string): Promise<void> {
+    await this._rtc.sendChatImage(data, mime);
+  }
+
+  onMessage(callback: (msg: ChatTextMessage) => void): void {
+    this._rtc.onChatMessage(callback);
+  }
+
+  onImage(callback: (img: ChatImage) => void): void {
+    this._rtc.onChatImage(callback);
+  }
+
+  get history(): Array<ChatTextMessage | ChatImage> {
+    return this._rtc.chatHistory;
+  }
+}
+
 export class Session {
   private _transport: Transport;
   private _requestId: string;
   private _sessionId: string | null = null;
   private _mode: string;
   private _active = false;
-  private _chat: ChatAPI | null = null;
+  private _rtc: RTCTransport | null = null;
+  private _p2pChat: P2PChatAPI | null = null;
+  private _iceServers: RTCIceServer[];
 
-  constructor(transport: Transport, requestId: string, mode: string) {
+  constructor(
+    transport: Transport,
+    requestId: string,
+    mode: string,
+    iceServers?: RTCIceServer[],
+  ) {
     this._transport = transport;
     this._requestId = requestId;
     this._mode = mode;
+    this._iceServers = iceServers ?? [{ urls: 'stun:stun.l.google.com:19302' }];
   }
 
   get sessionId(): string | null {
@@ -36,11 +77,15 @@ export class Session {
     this._requestId = id;
   }
 
-  get chat(): ChatAPI {
-    if (!this._chat) {
-      this._chat = new ChatAPI(this._transport, this._sessionId ?? this._requestId, null);
+  get chat(): P2PChatAPI {
+    if (!this._p2pChat) {
+      throw new CekiBrowserError('Chat not available until P2P connection is established');
     }
-    return this._chat;
+    return this._p2pChat;
+  }
+
+  get rtc(): RTCTransport | null {
+    return this._rtc;
   }
 
   installMatchListener(): void {
@@ -57,11 +102,8 @@ export class Session {
       if (!settled) {
         if (method === 'session.matched') {
           settled = true;
-          const sid = (params.session_id ?? '') as string;
-          this._sessionId = sid;
+          this._sessionId = (params.session_id ?? '') as string;
           this._active = true;
-          this._chat = new ChatAPI(this._transport, sid || this._requestId, null);
-          this._installChatHandler();
           this._matchResolve!();
         } else if (method === 'session.no_match') {
           settled = true;
@@ -92,6 +134,8 @@ export class Session {
         this._transport.onEvent(this._matchOriginalCb!);
       }
     }
+
+    await this._setupRtc();
   }
 
   private _matchOriginalCb: EventCallback | null | undefined;
@@ -101,7 +145,11 @@ export class Session {
 
   async navigate(url: string, timeoutMs = 120000): Promise<NavigateResult> {
     this._checkActive();
-    const data = await this._transport.send('browser.navigate', { url, timeout_ms: timeoutMs }, timeoutMs + 5000);
+    const data = await this._rtc!.sendCommand(
+      'browser.navigate',
+      { url, timeout_ms: timeoutMs },
+      timeoutMs + 5000,
+    );
     return (data ?? { url: '', title: '', status: 0 }) as NavigateResult;
   }
 
@@ -109,7 +157,7 @@ export class Session {
     this._checkActive();
     const params: Record<string, unknown> = { selector };
     if (attributes) params.attributes = attributes;
-    const data = await this._transport.send('browser.query', params);
+    const data = await this._rtc!.sendCommand('browser.query', params);
     return (data ?? { elements: [] }) as QueryResult;
   }
 
@@ -117,13 +165,13 @@ export class Session {
     this._checkActive();
     const params: Record<string, unknown> = { selector, limit };
     if (attributes) params.attributes = attributes;
-    const data = await this._transport.send('browser.query_all', params);
+    const data = await this._rtc!.sendCommand('browser.query_all', params);
     return (data ?? { elements: [] }) as QueryResult;
   }
 
   async getHtml(selector = 'html', outer = true): Promise<HtmlResult> {
     this._checkActive();
-    const data = await this._transport.send('browser.get_html', { selector, outer });
+    const data = await this._rtc!.sendCommand('browser.get_html', { selector, outer });
     return (data ?? { html: '' }) as HtmlResult;
   }
 
@@ -133,12 +181,12 @@ export class Session {
     if (selector) params.selector = selector;
     if (x != null) params.x = x;
     if (y != null) params.y = y;
-    await this._transport.send('browser.click', params);
+    await this._rtc!.sendCommand('browser.click', params);
   }
 
   async type(selector: string, text: string, delayMs = 0): Promise<void> {
     this._checkActive();
-    await this._transport.send('browser.type', { selector, text, delay_ms: delayMs });
+    await this._rtc!.sendCommand('browser.type', { selector, text, delay_ms: delayMs });
   }
 
   async scroll(selector?: string, direction = 'down', amount = 500): Promise<void> {
@@ -150,42 +198,42 @@ export class Session {
       params.direction = direction;
       params.amount = amount;
     }
-    await this._transport.send('browser.scroll', params);
+    await this._rtc!.sendCommand('browser.scroll', params);
   }
 
   async screenshot(format = 'png', quality = 80): Promise<ScreenshotResult> {
     this._checkActive();
-    const data = await this._transport.send('browser.screenshot', { format, quality });
+    const data = await this._rtc!.sendCommand('browser.screenshot', { format, quality });
     return (data ?? { data: '', width: 0, height: 0 }) as ScreenshotResult;
   }
 
   async back(): Promise<NavigateResult> {
     this._checkActive();
-    const data = await this._transport.send('browser.back');
+    const data = await this._rtc!.sendCommand('browser.back');
     return (data ?? { url: '', title: '', status: 0 }) as NavigateResult;
   }
 
   async forward(): Promise<NavigateResult> {
     this._checkActive();
-    const data = await this._transport.send('browser.forward');
+    const data = await this._rtc!.sendCommand('browser.forward');
     return (data ?? { url: '', title: '', status: 0 }) as NavigateResult;
   }
 
   async reload(): Promise<NavigateResult> {
     this._checkActive();
-    const data = await this._transport.send('browser.reload');
+    const data = await this._rtc!.sendCommand('browser.reload');
     return (data ?? { url: '', title: '', status: 0 }) as NavigateResult;
   }
 
   async injectCredentials(secretId: string, target: Record<string, string>): Promise<Record<string, unknown>> {
     this._checkActive();
-    const data = await this._transport.send('browser.inject_credentials', { secret_id: secretId, ...target });
+    const data = await this._rtc!.sendCommand('browser.inject_credentials', { secret_id: secretId, ...target });
     return (data ?? {}) as Record<string, unknown>;
   }
 
   async requestHumanAction(actionType: string, message: string, timeoutSec = 120): Promise<HumanActionResult> {
     this._checkActive();
-    const data = await this._transport.send(
+    const data = await this._rtc!.sendCommand(
       'browser.request_human_action',
       {
         request_id: randomUUID(),
@@ -210,21 +258,70 @@ export class Session {
     } catch {
       // best-effort
     }
+    if (this._rtc) {
+      this._rtc.close();
+      this._rtc = null;
+      this._p2pChat = null;
+    }
   }
 
-  private _installChatHandler(): void {
+  private async _setupRtc(): Promise<void> {
+    this._rtc = new RTCTransport(this._iceServers);
+    this._p2pChat = new P2PChatAPI(this._rtc);
+
+    this._rtc.onSignaling((method, params) => {
+      this._transport.notify(method, {
+        session_id: this._sessionId,
+        ...params,
+      });
+    });
+
+    let answerResolve: (sdp: RTCSessionDescriptionInit) => void;
+    let answerReject: (err: Error) => void;
+    const answerPromise = new Promise<RTCSessionDescriptionInit>((resolve, reject) => {
+      answerResolve = resolve;
+      answerReject = reject;
+    });
+
+    const originalCb = (this._transport as unknown as { _eventCallback: EventCallback | null })._eventCallback;
+    const signalingHandler: EventCallback = (method, params) => {
+      if (method === 'webrtc.answer') {
+        answerResolve(params as unknown as RTCSessionDescriptionInit);
+      } else if (method === 'webrtc.ice') {
+        this._rtc?.addIceCandidate(params as unknown as RTCIceCandidateInit).catch(() => {});
+      } else if (method === 'session.ended') {
+        this._active = false;
+        answerReject(new CekiBrowserError('Session ended before RTC handshake completed'));
+      }
+      if (originalCb) originalCb(method, params);
+    };
+    this._transport.onEvent(signalingHandler);
+
+    const offer = await this._rtc.createOffer();
+    this._transport.notify('webrtc.offer', {
+      session_id: this._sessionId,
+      sdp: offer.sdp,
+      type: offer.type,
+    });
+
+    const answerTimeout = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new CekiBrowserError('Timed out waiting for WebRTC answer')), 30000);
+    });
+
+    const answer = await Promise.race([answerPromise, answerTimeout]);
+    await this._rtc.applyAnswer(answer);
+    await this._rtc.waitConnected(15000);
+
+    this._installSessionEventHandler();
+  }
+
+  private _installSessionEventHandler(): void {
     const originalCb = (this._transport as unknown as { _eventCallback: EventCallback | null })._eventCallback;
 
     const handler: EventCallback = (method, params) => {
-      if (method === 'chat.topic_created' && this._chat) {
-        const topicId = params.chat_topic_id as string;
-        if (topicId) this._chat._setTopicId(topicId);
-      } else if (method === 'chat.message' && this._chat) {
-        this._chat._dispatchMessage(params);
-      } else if (method === 'chat.typing' && this._chat) {
-        this._chat._dispatchTyping(params);
+      if (method === 'session.ended') {
+        this._active = false;
       }
-
       if (originalCb) originalCb(method, params);
     };
 
@@ -233,5 +330,6 @@ export class Session {
 
   private _checkActive(): void {
     if (!this._active) throw new CekiBrowserError('Session is not active');
+    if (!this._rtc) throw new CekiBrowserError('P2P transport not established');
   }
 }

@@ -1,6 +1,8 @@
 export { Browser } from './browser.js';
 export { ChatAPI } from './chat.js';
-export { Session } from './session.js';
+export { Session, P2PChatAPI } from './session.js';
+export { RTCTransport } from './transport-rtc.js';
+export type { ChatTextMessage, ChatImage, SignalingCallback } from './transport-rtc.js';
 export {
   AuthError,
   CekiBrowserError,
