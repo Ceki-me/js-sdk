@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
 import { ChatAPI } from './chat.js';
-import { CekiBrowserError } from './errors.js';
+import { CekiBrowserError, NoMatchError, SessionEndedError } from './errors.js';
 import type { Transport, EventCallback } from './transport.js';
 import type {
   HtmlResult,
@@ -41,37 +41,43 @@ export class Session {
 
   async waitForActive(timeout = 60000): Promise<void> {
     return new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => {
+      let settled = false;
+      const originalCb = (this._transport as unknown as { _eventCallback: EventCallback | null })._eventCallback;
+
+      const cleanup = () => {
+        clearTimeout(timer);
         this._transport.onEvent(originalCb!);
+      };
+
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        cleanup();
         reject(new CekiBrowserError('Timed out waiting for session to become active'));
       }, timeout);
 
-      const originalCb = (this._transport as unknown as { _eventCallback: EventCallback | null })._eventCallback;
-
       const handler: EventCallback = (method, params) => {
-        if (method === 'session.state_changed') {
-          const state = params.state as string;
-          const sid = (params.session_id ?? params.request_id ?? '') as string;
-          if (state === 'ACTIVE') {
+        if (!settled) {
+          if (method === 'session.matched') {
+            settled = true;
+            const sid = (params.session_id ?? '') as string;
             this._sessionId = sid;
             this._active = true;
-            this._chat = new ChatAPI(this._transport, sid, null);
+            this._chat = new ChatAPI(this._transport, sid || this._requestId, null);
             this._installChatHandler();
-            clearTimeout(timer);
+            cleanup();
             resolve();
-          } else if (state === 'ENDED' || state === 'ENDING') {
-            clearTimeout(timer);
-            this._transport.onEvent(originalCb!);
-            reject(new CekiBrowserError(`Session ended with state: ${state}`));
+          } else if (method === 'session.no_match') {
+            settled = true;
+            cleanup();
+            const reason = (params.reason ?? 'No matching providers available') as string;
+            reject(new NoMatchError(reason));
+          } else if (method === 'session.ended') {
+            settled = true;
+            cleanup();
+            const reason = (params.reason ?? 'ended_before_active') as string;
+            reject(new SessionEndedError(reason));
           }
-        }
-        if (method === 'session.started') {
-          this._sessionId = (params.session_id ?? '') as string;
-          this._active = true;
-          this._chat = new ChatAPI(this._transport, this._sessionId, null);
-          this._installChatHandler();
-          clearTimeout(timer);
-          resolve();
         }
         if (originalCb) originalCb(method, params);
       };

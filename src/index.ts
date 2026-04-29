@@ -8,9 +8,11 @@ export {
   HumanActionDeclined,
   HumanActionTimeout,
   NavigationTimeout,
+  NoMatchError,
   ProviderDisconnected,
   ProviderNotVerified,
   RateLimited,
+  SessionEndedError,
 } from './errors.js';
 export type {
   BrowserOptions,

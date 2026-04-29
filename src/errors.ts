@@ -63,6 +63,20 @@ export class HumanActionTimeout extends CekiBrowserError {
   }
 }
 
+export class NoMatchError extends CekiBrowserError {
+  constructor(message: string, code = 0) {
+    super(message, code);
+    this.name = 'NoMatchError';
+  }
+}
+
+export class SessionEndedError extends CekiBrowserError {
+  constructor(message: string, code = 0) {
+    super(message, code);
+    this.name = 'SessionEndedError';
+  }
+}
+
 export const ERROR_CODE_MAP: Record<number, new (msg: string, code: number) => CekiBrowserError> = {
   [-1010]: ProviderDisconnected,
   [-1013]: RateLimited,
