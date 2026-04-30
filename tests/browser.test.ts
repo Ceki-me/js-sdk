@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { Session, P2PChatAPI } from '../src/session.js';
+import { Session } from '../src/session.js';
 import { CekiBrowserError } from '../src/errors.js';
 import type { EventCallback } from '../src/transport.js';
 
@@ -26,11 +26,9 @@ class MockTransport {
 class MockRTCTransport {
   pc = {} as RTCPeerConnection;
   cmdChannel = { readyState: 'open' } as RTCDataChannel;
-  chatChannel = { readyState: 'open' } as RTCDataChannel;
 
   _responses = new Map<string, unknown>();
   _calls: Array<{ method: string; params?: Record<string, unknown> }> = [];
-  private _chatHistory: Array<unknown> = [];
 
   setResponse(method: string, result: unknown) { this._responses.set(method, result); }
 
@@ -39,13 +37,7 @@ class MockRTCTransport {
     return this._responses.get(method) ?? {};
   }
 
-  sendChatText() {}
-  async sendChatImage() {}
-  onChatMessage() {}
-  onChatImage() {}
   onSignaling() {}
-
-  get chatHistory() { return [...this._chatHistory]; }
 
   close() {}
 }

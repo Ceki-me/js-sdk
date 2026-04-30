@@ -2,7 +2,6 @@ import { randomUUID } from 'crypto';
 import { CekiBrowserError, NoMatchError, SessionEndedError } from './errors.js';
 import type { Transport, EventCallback } from './transport.js';
 import { RTCTransport } from './transport-rtc.js';
-import type { ChatTextMessage, ChatImage } from './transport-rtc.js';
 import type {
   HtmlResult,
   HumanActionResult,
@@ -11,38 +10,6 @@ import type {
   ScreenshotResult,
 } from './types.js';
 
-export class P2PChatAPI {
-  private _rtc: RTCTransport;
-
-  constructor(rtc: RTCTransport) {
-    this._rtc = rtc;
-  }
-
-  get available(): boolean {
-    return this._rtc.chatChannel.readyState === 'open';
-  }
-
-  send(text: string): void {
-    this._rtc.sendChatText(text);
-  }
-
-  async sendImage(data: Uint8Array | ArrayBuffer | string, mime?: string): Promise<void> {
-    await this._rtc.sendChatImage(data, mime);
-  }
-
-  onMessage(callback: (msg: ChatTextMessage) => void): void {
-    this._rtc.onChatMessage(callback);
-  }
-
-  onImage(callback: (img: ChatImage) => void): void {
-    this._rtc.onChatImage(callback);
-  }
-
-  get history(): Array<ChatTextMessage | ChatImage> {
-    return this._rtc.chatHistory;
-  }
-}
-
 export class Session {
   private _transport: Transport;
   private _requestId: string;
@@ -50,7 +17,6 @@ export class Session {
   private _mode: string;
   private _active = false;
   private _rtc: RTCTransport | null = null;
-  private _p2pChat: P2PChatAPI | null = null;
   private _iceServers: RTCIceServer[];
 
   constructor(
@@ -75,13 +41,6 @@ export class Session {
 
   set requestId(id: string) {
     this._requestId = id;
-  }
-
-  get chat(): P2PChatAPI {
-    if (!this._p2pChat) {
-      throw new CekiBrowserError('Chat not available until P2P connection is established');
-    }
-    return this._p2pChat;
   }
 
   get rtc(): RTCTransport | null {
@@ -261,13 +220,11 @@ export class Session {
     if (this._rtc) {
       this._rtc.close();
       this._rtc = null;
-      this._p2pChat = null;
     }
   }
 
   private async _setupRtc(): Promise<void> {
     this._rtc = new RTCTransport(this._iceServers);
-    this._p2pChat = new P2PChatAPI(this._rtc);
 
     this._rtc.onSignaling((method, params) => {
       this._transport.notify(method, {
