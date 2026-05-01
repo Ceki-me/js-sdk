@@ -4,6 +4,7 @@ interface PendingCmd {
   resolve: (value: unknown) => void;
   reject: (err: Error) => void;
   timer: ReturnType<typeof setTimeout>;
+  sendTs: number;
 }
 
 export type SignalingCallback = (method: string, params: Record<string, unknown>) => void;
@@ -90,13 +91,14 @@ export class RTCTransport {
 
     const id = this._cmdNextId++;
 
+    const sendTs = Date.now();
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this._cmdPending.delete(id);
         reject(new CommandTimeout(`Command ${method} timed out after ${timeoutMs}ms`, -1020));
       }, timeoutMs);
 
-      this._cmdPending.set(id, { resolve, reject, timer });
+      this._cmdPending.set(id, { resolve, reject, timer, sendTs });
 
       const payload: Record<string, unknown> = { jsonrpc: '2.0', method, id };
       if (params) payload.params = params;
@@ -121,6 +123,24 @@ export class RTCTransport {
       try {
         msg = JSON.parse(ev.data as string);
       } catch {
+        return;
+      }
+
+      if (msg.method === 'bridge.cmd_received') {
+        const params = (msg.params ?? {}) as Record<string, unknown>;
+        const cmdId = params.id as number | undefined;
+        const pending = cmdId != null ? this._cmdPending.get(cmdId) : undefined;
+        const latency = pending ? Math.round(Number(params.ts ?? Date.now()) - pending.sendTs) : -1;
+        console.info(`[bridge_probe] bridge.cmd_received id=${cmdId} method=${params.method} latency_send_to_recv=${latency}ms channel_state=${params.channel_state}`);
+        return;
+      }
+
+      if (msg.method === 'bridge.sw_response_sent') {
+        const params = (msg.params ?? {}) as Record<string, unknown>;
+        const cmdId = params.id as number | undefined;
+        const pending = cmdId != null ? this._cmdPending.get(cmdId) : undefined;
+        const latency = pending ? Math.round(Date.now() - pending.sendTs) : -1;
+        console.info(`[bridge_probe] bridge.sw_response_sent id=${cmdId} latency_offscreen_roundtrip=${latency}ms`);
         return;
       }
 
