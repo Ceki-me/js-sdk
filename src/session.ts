@@ -223,6 +223,11 @@ export class Session {
     }
   }
 
+  /** Alias for {@link close} — end the browser rental. */
+  async release(reason = 'completed'): Promise<void> {
+    return this.close(reason);
+  }
+
   private async _setupRtc(): Promise<void> {
     this._rtc = new RTCTransport(this._iceServers);
 
