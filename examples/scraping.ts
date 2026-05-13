@@ -1,18 +1,24 @@
-import { Browser } from 'ceki-browser';
+import { connect } from 'ceki-browser';
 
-const br = new Browser({ token: 'YOUR_TOKEN' });
-await br.connect();
+const client = await connect(process.env.CEKI_API_KEY!);
+const browser = await client.rent(parseInt(process.env.SCHEDULE_ID!));
 
-const s = await br.openSession({ mode: 'incognito' });
-await s.navigate('https://news.ycombinator.com');
+await browser.navigate('https://news.ycombinator.com');
 
-const items = await s.queryAll('a.titlelink', ['textContent', 'href'], 10);
-for (const el of items.elements) {
-  console.log(`${el.textContent} — ${el.href}`);
-}
+const result = await browser.send({
+  method: 'Runtime.evaluate',
+  params: {
+    expression: `JSON.stringify(
+      Array.from(document.querySelectorAll('.titleline a'))
+        .slice(0, 10)
+        .map(a => ({ title: a.textContent, href: a.href }))
+    )`,
+    returnByValue: true,
+  },
+});
 
-const html = await s.getHtml('body', false);
-console.log(`Body HTML length: ${html.html.length}`);
+const items = JSON.parse((result as any)?.result?.value ?? '[]');
+console.log('Top 10 HN stories:', items);
 
-await s.close();
-await br.close();
+await browser.close();
+await client.close();

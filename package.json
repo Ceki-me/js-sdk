@@ -1,6 +1,6 @@
 {
   "name": "ceki-browser",
-  "version": "0.2.0",
+  "version": "1.0.0",
   "description": "TypeScript SDK for browser.ceki.me — rent real browsers of real people",
   "license": "MIT",
   "type": "module",
@@ -13,6 +13,9 @@
       "import": "./dist/index.js",
       "require": "./dist/index.cjs"
     }
+  },
+  "bin": {
+    "ceki-browser": "./dist/cli.js"
   },
   "files": ["dist"],
   "keywords": ["browser", "automation", "websocket", "rpc", "ai-agent", "ceki"],

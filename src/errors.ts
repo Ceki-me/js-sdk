@@ -1,84 +1,114 @@
 export class CekiBrowserError extends Error {
-  code: number;
-  constructor(message: string, code = 0) {
+  constructor(message: string) {
     super(message);
     this.name = 'CekiBrowserError';
-    this.code = code;
   }
 }
 
 export class AuthError extends CekiBrowserError {
-  constructor(message: string, code = 401) {
-    super(message, code);
+  constructor(message = 'Authentication failed') {
+    super(message);
     this.name = 'AuthError';
   }
 }
 
+export class SessionNotFound extends CekiBrowserError {
+  constructor(message = 'Session not found') {
+    super(message);
+    this.name = 'SessionNotFound';
+  }
+}
+
+export class SessionExpired extends SessionNotFound {
+  constructor(message = 'Session expired') {
+    super(message);
+    this.name = 'SessionExpired';
+  }
+}
+
+export class NotOwner extends CekiBrowserError {
+  constructor(message = 'Not session owner') {
+    super(message);
+    this.name = 'NotOwner';
+  }
+}
+
+export class TransportError extends CekiBrowserError {
+  constructor(message = 'Transport error') {
+    super(message);
+    this.name = 'TransportError';
+  }
+}
+
+export class TimeoutError extends CekiBrowserError {
+  constructor(message = 'Operation timed out') {
+    super(message);
+    this.name = 'TimeoutError';
+  }
+}
+
+export class SessionEnded extends CekiBrowserError {
+  reason: string;
+  constructor(reason: string) {
+    super(`Session ended: ${reason}`);
+    this.name = 'SessionEnded';
+    this.reason = reason;
+  }
+}
+
+export class InsufficientFunds extends CekiBrowserError {
+  constructor(message = 'Insufficient funds') {
+    super(message);
+    this.name = 'InsufficientFunds';
+  }
+}
+
+export class RateLimitExceeded extends CekiBrowserError {
+  retryAfter: number;
+  constructor(retryAfter = 0, message = 'Rate limit exceeded') {
+    super(message);
+    this.name = 'RateLimitExceeded';
+    this.retryAfter = retryAfter;
+  }
+}
+
+export class ConnectionLost extends CekiBrowserError {
+  constructor(message = 'Connection lost') {
+    super(message);
+    this.name = 'ConnectionLost';
+  }
+}
+
+export class ProviderOffline extends CekiBrowserError {
+  constructor(message = 'Provider offline') {
+    super(message);
+    this.name = 'ProviderOffline';
+  }
+}
+
 export class ProviderDisconnected extends CekiBrowserError {
-  constructor(message: string, code = -1010) {
-    super(message, code);
+  constructor(message = 'Provider disconnected') {
+    super(message);
     this.name = 'ProviderDisconnected';
   }
 }
 
-export class NavigationTimeout extends CekiBrowserError {
-  constructor(message: string, code = -1020) {
-    super(message, code);
-    this.name = 'NavigationTimeout';
+export class CdpUnrecoverable extends CekiBrowserError {
+  lastError: string;
+  constructor(lastError: string) {
+    super(`CDP unrecoverable: ${lastError}`);
+    this.name = 'CdpUnrecoverable';
+    this.lastError = lastError;
   }
 }
 
-export class CommandTimeout extends CekiBrowserError {
-  constructor(message: string, code = -1020) {
-    super(message, code);
-    this.name = 'CommandTimeout';
+export class ChatSendFailed extends CekiBrowserError {
+  status: number;
+  messageText: string;
+  constructor(status: number, messageText: string) {
+    super(`Chat send failed (${status})`);
+    this.name = 'ChatSendFailed';
+    this.status = status;
+    this.messageText = messageText;
   }
 }
-
-export class RateLimited extends CekiBrowserError {
-  constructor(message: string, code = -1013) {
-    super(message, code);
-    this.name = 'RateLimited';
-  }
-}
-
-export class ProviderNotVerified extends CekiBrowserError {
-  constructor(message: string, code = -1014) {
-    super(message, code);
-    this.name = 'ProviderNotVerified';
-  }
-}
-
-export class HumanActionDeclined extends CekiBrowserError {
-  constructor(message: string, code = -1030) {
-    super(message, code);
-    this.name = 'HumanActionDeclined';
-  }
-}
-
-export class HumanActionTimeout extends CekiBrowserError {
-  constructor(message: string, code = -1031) {
-    super(message, code);
-    this.name = 'HumanActionTimeout';
-  }
-}
-
-export class NoMatchError extends CekiBrowserError {
-  constructor(message: string, code = 0) {
-    super(message, code);
-    this.name = 'NoMatchError';
-  }
-}
-
-export class SessionEndedError extends CekiBrowserError {
-  constructor(message: string, code = 0) {
-    super(message, code);
-    this.name = 'SessionEndedError';
-  }
-}
-
-export const ERROR_CODE_MAP: Record<number, new (msg: string, code: number) => CekiBrowserError> = {
-  [-1010]: ProviderDisconnected,
-  [-1013]: RateLimited,
-  [-1014]: ProviderNotVerified,
-};

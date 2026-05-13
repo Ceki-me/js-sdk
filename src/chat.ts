@@ -1,176 +1,230 @@
-import type { Transport } from './transport.js';
-import type { ChatMessage, TypingEvent } from './types.js';
+import * as crypto from 'node:crypto';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { TimeoutError, ChatSendFailed } from './errors.js';
+import type { ChatMessage, ReadReceipt, ChatHistoryOptions } from './types.js';
+import type { Browser } from './browser.js';
 
-type MessageHandler = (msg: ChatMessage) => void;
-type TypingHandler = (event: TypingEvent) => void;
+type MessageHandler = (msg: ChatMessage) => void | Promise<void>;
+type ReadHandler = (receipt: ReadReceipt) => void | Promise<void>;
 
-function parseChatMessage(data: Record<string, unknown>): ChatMessage {
-  return {
-    _id: String(data._id ?? data.message_id ?? data.id ?? ''),
-    topic_id: String(data.topic_id ?? ''),
-    author_id: Number(data.author_id ?? data.user_id ?? 0),
-    author_name: String(data.author_name ?? ''),
-    type: (data.type as ChatMessage['type']) ?? 'text',
-    content: String(data.content ?? ''),
-    media: (data.media as ChatMessage['media']) ?? null,
-    created_at: String(data.created_at ?? ''),
-  };
+interface PendingSend {
+  resolve: (value: { messageId: string; sentAt: string }) => void;
+  reject: (err: Error) => void;
+  timer: ReturnType<typeof setTimeout>;
 }
 
-export class ChatAPI {
-  private _transport: Transport;
-  private _sessionId: string;
+const MAX_IMAGE_SIZE = 5 * 1024 * 1024; // 5MB
+
+function detectMime(buf: Buffer): { mime: string; ext: string } {
+  if (buf.length >= 4 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) {
+    return { mime: 'image/png', ext: 'png' };
+  }
+  if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) {
+    return { mime: 'image/jpeg', ext: 'jpg' };
+  }
+  if (buf.length >= 12 && buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x46
+    && buf[8] === 0x57 && buf[9] === 0x45 && buf[10] === 0x42 && buf[11] === 0x50) {
+    return { mime: 'image/webp', ext: 'webp' };
+  }
+  return { mime: 'application/octet-stream', ext: 'bin' };
+}
+
+function randomHex(len: number): string {
+  return crypto.randomBytes(len / 2).toString('hex');
+}
+
+export class BrowserChat {
+  private _browser: Browser;
   private _topicId: string | null;
   private _messageHandlers: MessageHandler[] = [];
-  private _typingHandlers: TypingHandler[] = [];
+  private _readHandlers: ReadHandler[] = [];
+  private _pendingSends: Map<string, PendingSend> = new Map();
 
-  constructor(transport: Transport, sessionId: string, topicId: string | null) {
-    this._transport = transport;
-    this._sessionId = sessionId;
-    this._topicId = topicId;
+  constructor(browser: Browser) {
+    this._browser = browser;
+    this._topicId = browser.chatTopicId;
   }
 
   get topicId(): string | null {
     return this._topicId;
   }
 
-  get available(): boolean {
-    return this._topicId !== null;
-  }
-
-  /** @internal */
-  _setTopicId(topicId: string): void {
-    this._topicId = topicId;
-  }
-
-  async send(text: string): Promise<ChatMessage> {
-    const data = (await this._transport.send(
-      'chat.send',
-      { session_id: this._sessionId, type: 'text', content: text },
-      15000,
-    )) as Record<string, unknown> | null;
-    const result = data ?? {};
-    return {
-      _id: String(result.message_id ?? ''),
-      topic_id: this._topicId ?? '',
-      author_id: 0,
-      author_name: '',
-      type: 'text',
-      content: text,
-      media: null,
-      created_at: String(result.created_at ?? ''),
+  async send(text: string): Promise<{ messageId: string; sentAt: string }> {
+    const clientMsgId = randomHex(32);
+    const msg = {
+      type: 'chat.send' as const,
+      session_id: this._browser.sessionId,
+      client_msg_id: clientMsgId,
+      text,
     };
-  }
 
-  async sendImage(image: Blob | ArrayBuffer | string, mime = 'image/png'): Promise<ChatMessage> {
-    let b64: string;
-    if (typeof image === 'string') {
-      b64 = image;
-    } else if (image instanceof ArrayBuffer) {
-      b64 = bufferToBase64(new Uint8Array(image));
-    } else {
-      const buf = await image.arrayBuffer();
-      b64 = bufferToBase64(new Uint8Array(buf));
-    }
-
-    const name = `image.${mime.split('/').pop() ?? 'png'}`;
-    const data = (await this._transport.send(
-      'chat.send',
-      {
-        session_id: this._sessionId,
-        type: 'image',
-        content: '',
-        media: { data: b64, mime, name },
-      },
-      30000,
-    )) as Record<string, unknown> | null;
-    const result = data ?? {};
-    return {
-      _id: String(result.message_id ?? ''),
-      topic_id: this._topicId ?? '',
-      author_id: 0,
-      author_name: '',
-      type: 'image',
-      content: '',
-      media: null,
-      created_at: String(result.created_at ?? ''),
-    };
-  }
-
-  async history(opts?: { before?: string; limit?: number }): Promise<ChatMessage[]> {
-    if (!this._topicId) return [];
-    const params: Record<string, unknown> = {
-      session_id: this._sessionId,
-      limit: opts?.limit ?? 50,
-    };
-    if (opts?.before) params.before = opts.before;
-    const data = (await this._transport.send('chat.history', params, 15000)) as Record<string, unknown> | null;
-    const result = data ?? {};
-    const messages = (result.messages ?? []) as Record<string, unknown>[];
-    return messages.map(parseChatMessage);
-  }
-
-  async markRead(lastMessageId: string): Promise<void> {
-    if (!this._topicId) return;
-    await this._transport.send(
-      'chat.read',
-      { session_id: this._sessionId, last_message_id: lastMessageId },
-      10000,
-    );
-  }
-
-  async typing(isTyping = true): Promise<void> {
-    this._transport.notify('chat.typing', {
-      session_id: this._sessionId,
-      is_typing: isTyping,
+    return new Promise<{ messageId: string; sentAt: string }>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this._pendingSends.delete(clientMsgId);
+        reject(new TimeoutError('Chat send timed out'));
+      }, 15000);
+      this._pendingSends.set(clientMsgId, { resolve, reject, timer });
+      this._browser._sendRaw(msg);
     });
   }
 
-  onMessage(handler: MessageHandler): () => void {
-    this._messageHandlers.push(handler);
-    return () => {
-      const idx = this._messageHandlers.indexOf(handler);
-      if (idx >= 0) this._messageHandlers.splice(idx, 1);
+  async sendImage(source: string | Buffer, text?: string): Promise<{ messageId: string; sentAt: string }> {
+    let buf: Buffer;
+    let filename: string;
+
+    if (typeof source === 'string') {
+      buf = fs.readFileSync(source);
+      filename = path.basename(source);
+    } else {
+      buf = Buffer.isBuffer(source) ? source : Buffer.from(source);
+      filename = 'image';
+    }
+
+    if (buf.length > MAX_IMAGE_SIZE) {
+      throw new Error(`Image too large: ${buf.length} bytes (max ${MAX_IMAGE_SIZE})`);
+    }
+
+    const { mime, ext } = detectMime(buf);
+    if (!filename.includes('.')) {
+      filename = `${filename}.${ext}`;
+    }
+
+    const clientMsgId = randomHex(32);
+    const data_b64 = buf.toString('base64');
+
+    const msg: Record<string, unknown> = {
+      type: 'chat.send_image',
+      session_id: this._browser.sessionId,
+      client_msg_id: clientMsgId,
+      filename,
+      mime,
+      data_b64,
     };
+    if (text) msg.text = text;
+
+    return new Promise<{ messageId: string; sentAt: string }>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this._pendingSends.delete(clientMsgId);
+        reject(new TimeoutError('Chat sendImage timed out'));
+      }, 15000);
+      this._pendingSends.set(clientMsgId, { resolve, reject, timer });
+      this._browser._sendRaw(msg);
+    });
   }
 
-  onTyping(handler: TypingHandler): () => void {
-    this._typingHandlers.push(handler);
-    return () => {
-      const idx = this._typingHandlers.indexOf(handler);
-      if (idx >= 0) this._typingHandlers.splice(idx, 1);
+  onMessage(cb: MessageHandler): void {
+    this._messageHandlers.push(cb);
+  }
+
+  onRead(cb: ReadHandler): void {
+    this._readHandlers.push(cb);
+  }
+
+  async history(opts?: ChatHistoryOptions): Promise<ChatMessage[]> {
+    if (!this._topicId) return [];
+
+    const params = new URLSearchParams();
+    params.set('topic_id', this._topicId);
+    if (opts?.limit != null) params.set('limit', String(opts.limit));
+    if (opts?.beforeId) params.set('before', opts.beforeId);
+    if (opts?.since) params.set('since', opts.since);
+
+    const url = `${this._browser._chatUrl}/messages?${params.toString()}`;
+    const headers: Record<string, string> = {
+      'Authorization': `Bearer ${this._browser._apiKey}`,
     };
+
+    const basicAuth = this._browser._basicAuth;
+    if (basicAuth) {
+      const encoded = Buffer.from(`${basicAuth[0]}:${basicAuth[1]}`).toString('base64');
+      headers['X-Basic-Auth'] = `Basic ${encoded}`;
+    }
+
+    const resp = await fetch(url, { headers });
+    if (!resp.ok) {
+      throw new Error(`Chat history request failed: ${resp.status} ${resp.statusText}`);
+    }
+
+    const body = await resp.json() as Record<string, unknown>;
+    const messages = (body.messages ?? body.data ?? body) as Record<string, unknown>[];
+    if (!Array.isArray(messages)) return [];
+
+    return messages.map(parseChatMessage);
   }
 
   /** @internal */
-  _dispatchMessage(params: Record<string, unknown>): void {
-    const msgData = (params.message ?? params) as Record<string, unknown>;
+  _onMessage(payload: Record<string, unknown>): void {
+    const msgData = (payload.message ?? payload) as Record<string, unknown>;
     const msg = parseChatMessage(msgData);
     for (const h of this._messageHandlers) {
       try {
-        h(msg);
+        const result = h(msg);
+        if (result && typeof (result as Promise<void>).catch === 'function') {
+          (result as Promise<void>).catch(() => {});
+        }
       } catch {
-        // handler errors should not break the event loop
+        // handler errors should not break dispatch
       }
     }
   }
 
   /** @internal */
-  _dispatchTyping(params: Record<string, unknown>): void {
-    const event: TypingEvent = {
-      user_id: Number(params.user_id ?? 0),
-      is_typing: Boolean(params.is_typing),
+  _onRead(payload: Record<string, unknown>): void {
+    const receipt: ReadReceipt = {
+      topic_id: String(payload.topic_id ?? this._topicId ?? ''),
+      last_read_message_id: String(payload.last_read_message_id ?? ''),
+      read_at: Number(payload.read_at ?? 0),
     };
-    for (const h of this._typingHandlers) {
+    for (const h of this._readHandlers) {
       try {
-        h(event);
+        const result = h(receipt);
+        if (result && typeof (result as Promise<void>).catch === 'function') {
+          (result as Promise<void>).catch(() => {});
+        }
       } catch {
-        // handler errors should not break the event loop
+        // handler errors should not break dispatch
       }
     }
   }
+
+  /** @internal */
+  _onSendAck(msg: Record<string, unknown>): void {
+    const clientMsgId = String(msg.client_msg_id ?? '');
+    const pending = this._pendingSends.get(clientMsgId);
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    this._pendingSends.delete(clientMsgId);
+    pending.resolve({
+      messageId: String(msg.message_id ?? ''),
+      sentAt: String(msg.sent_at ?? ''),
+    });
+  }
+
+  /** @internal */
+  _onSendError(msg: Record<string, unknown>): void {
+    const clientMsgId = String(msg.client_msg_id ?? '');
+    const pending = this._pendingSends.get(clientMsgId);
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    this._pendingSends.delete(clientMsgId);
+    pending.reject(new ChatSendFailed(
+      Number(msg.status ?? 0),
+      String(msg.message ?? ''),
+    ));
+  }
 }
 
-function bufferToBase64(bytes: Uint8Array): string {
-  return Buffer.from(bytes).toString('base64');
+function parseChatMessage(data: Record<string, unknown>): ChatMessage {
+  return {
+    id: String(data.id ?? data._id ?? data.message_id ?? ''),
+    topic_id: String(data.topic_id ?? ''),
+    sender_id: data.sender_id != null ? Number(data.sender_id) : null,
+    text: data.text != null ? String(data.text) : null,
+    media: (data.media as Record<string, unknown>[] | null) ?? null,
+    type: String(data.type ?? 'text'),
+    created_at: String(data.created_at ?? ''),
+    edited_at: data.edited_at != null ? String(data.edited_at) : null,
+    deleted_at: data.deleted_at != null ? String(data.deleted_at) : null,
+  };
 }

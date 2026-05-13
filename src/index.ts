@@ -1,29 +1,37 @@
+export { connect, Client } from './client.js';
 export { Browser } from './browser.js';
-export { ChatAPI } from './chat.js';
-export { Session } from './session.js';
-export { RTCTransport } from './transport-rtc.js';
-export type { SignalingCallback } from './transport-rtc.js';
+export { Humanizer } from './humanize/humanizer.js';
+export { HumanProfile } from './humanize/profile.js';
+export { BrowserChat } from './chat.js';
+export { BrowserProfile } from './profile.js';
 export {
-  AuthError,
   CekiBrowserError,
-  CommandTimeout,
-  HumanActionDeclined,
-  HumanActionTimeout,
-  NavigationTimeout,
-  NoMatchError,
+  AuthError,
+  SessionNotFound,
+  SessionExpired,
+  NotOwner,
+  TransportError,
+  TimeoutError,
+  SessionEnded,
+  InsufficientFunds,
+  RateLimitExceeded,
+  ConnectionLost,
+  ProviderOffline,
   ProviderDisconnected,
-  ProviderNotVerified,
-  RateLimited,
-  SessionEndedError,
+  CdpUnrecoverable,
+  ChatSendFailed,
 } from './errors.js';
 export type {
-  BrowserOptions,
+  ConnectOptions,
+  BrowserOption,
+  Match,
   ChatMessage,
-  HtmlResult,
-  HumanActionResult,
-  NavigateResult,
-  QueryResult,
-  ScreenshotResult,
-  SessionOptions,
-  TypingEvent,
+  ReadReceipt,
+  Snapshot,
+  Profile,
+  RentOptions,
+  ScreenshotOptions,
+  ScrollOptions,
+  ProfileExportOptions,
+  ChatHistoryOptions,
 } from './types.js';

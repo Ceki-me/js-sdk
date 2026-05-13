@@ -1,188 +1,230 @@
-import { describe, it, expect, vi } from 'vitest';
-import { ChatAPI } from '../src/chat.js';
-import { CekiBrowserError, CommandTimeout } from '../src/errors.js';
-import type { EventCallback } from '../src/transport.js';
-import type { ChatMessage, TypingEvent } from '../src/types.js';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import * as os from 'node:os';
+import { MockWebSocket, makeMatch } from './helpers.js';
 
-class MockTransport {
-  private _pending = new Map<number | string, { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>();
-  private _nextId = 1;
-  _eventCallback: EventCallback | null = null;
-  sent: Array<{ method: string; params?: Record<string, unknown>; hasId: boolean }> = [];
-  notified: Array<{ method: string; params?: Record<string, unknown> }> = [];
+vi.mock('ws', () => {
+  return { default: MockWebSocket, WebSocket: MockWebSocket };
+});
 
-  onEvent(cb: EventCallback) { this._eventCallback = cb; }
+vi.mock('../src/state.js', () => ({
+  saveSession: vi.fn(),
+  loadSession: vi.fn(() => null),
+  deleteSession: vi.fn(),
+  getLastSeenTs: vi.fn(() => null),
+  updateLastSeenTs: vi.fn(),
+}));
 
-  send(method: string, params?: Record<string, unknown>, timeout = 60000): Promise<unknown> {
-    return new Promise((resolve, reject) => {
-      const id = this._nextId++;
-      this.sent.push({ method, params, hasId: true });
-      const timer = setTimeout(() => {
-        this._pending.delete(id);
-        reject(new CommandTimeout(`Command ${method} timed out`, -1020));
-      }, timeout);
-      this._pending.set(id, { resolve, reject, timer });
+import { Browser } from '../src/browser.js';
+import { Client } from '../src/client.js';
+import { TimeoutError, ChatSendFailed } from '../src/errors.js';
+import type { ChatMessage } from '../src/types.js';
+
+let client: Client;
+let ws: MockWebSocket;
+let browser: Browser;
+
+beforeEach(async () => {
+  MockWebSocket.reset();
+  vi.useFakeTimers();
+  process.env.CEKI_HUMAN_DISABLE = '1';
+
+  const p = Client.create('key', { reconnect: false });
+  await vi.advanceTimersByTimeAsync(1);
+  client = await p;
+  ws = MockWebSocket.last();
+
+  const match = makeMatch();
+  browser = new Browser(client, match, null);
+  client._activeBrowsers.set(browser.sessionId, browser);
+});
+
+afterEach(() => {
+  client._activeBrowsers.clear();
+  vi.runOnlyPendingTimers();
+  vi.useRealTimers();
+  delete process.env.CEKI_HUMAN_DISABLE;
+});
+
+describe('chat.send()', () => {
+  it('sends chat.send, receives ack, returns messageId + sentAt', async () => {
+    const sendP = browser.chat.send('hello');
+
+    // Find the chat.send message
+    const chatMsg = ws.sent.find(m => m.type === 'chat.send');
+    expect(chatMsg).toBeDefined();
+    expect(chatMsg!.text).toBe('hello');
+    expect(chatMsg!.session_id).toBe(browser.sessionId);
+
+    // Send ack
+    ws.receive({
+      type: 'chat.send_ack',
+      session_id: browser.sessionId,
+      client_msg_id: chatMsg!.client_msg_id,
+      message_id: 'msg-100',
+      sent_at: '2024-01-01T00:00:00Z',
     });
-  }
 
-  notify(method: string, params?: Record<string, unknown>): void {
-    this.notified.push({ method, params });
-  }
-
-  resolveNext(result: unknown) {
-    const first = this._pending.entries().next().value;
-    if (first) {
-      const [id, p] = first;
-      this._pending.delete(id);
-      clearTimeout(p.timer);
-      p.resolve(result);
-    }
-  }
-
-  close() {
-    for (const [, p] of this._pending) {
-      clearTimeout(p.timer);
-      p.reject(new CekiBrowserError('closed'));
-    }
-    this._pending.clear();
-  }
-}
-
-describe('ChatAPI', () => {
-  it('send() sends chat.send with correct params', async () => {
-    const t = new MockTransport();
-    const chat = new ChatAPI(t as any, 'sess-1', 'topic-1');
-
-    const promise = chat.send('hello');
-    t.resolveNext({ message_id: 'msg-001', created_at: '2026-04-28T12:00:00Z', persisted: true });
-    const msg = await promise;
-
-    expect(msg._id).toBe('msg-001');
-    expect(msg.content).toBe('hello');
-    expect(msg.type).toBe('text');
-    expect(t.sent[0].method).toBe('chat.send');
-    expect(t.sent[0].params?.session_id).toBe('sess-1');
-    expect(t.sent[0].params?.type).toBe('text');
+    const result = await sendP;
+    expect(result.messageId).toBe('msg-100');
+    expect(result.sentAt).toBe('2024-01-01T00:00:00Z');
   });
 
-  it('sendImage() sends base64 image via chat.send', async () => {
-    const t = new MockTransport();
-    const chat = new ChatAPI(t as any, 'sess-1', 'topic-1');
-
-    const buf = new ArrayBuffer(16);
-    const promise = chat.sendImage(buf, 'image/png');
-    t.resolveNext({ message_id: 'msg-002', created_at: '2026-04-28T12:00:00Z' });
-    const msg = await promise;
-
-    expect(msg._id).toBe('msg-002');
-    expect(msg.type).toBe('image');
-    expect(t.sent[0].params?.type).toBe('image');
-    const media = t.sent[0].params?.media as Record<string, unknown>;
-    expect(media.mime).toBe('image/png');
-    expect(typeof media.data).toBe('string');
+  it('rejects with TimeoutError after 15s', async () => {
+    const sendP = browser.chat.send('timeout test').catch(e => e);
+    await vi.advanceTimersByTimeAsync(16_000);
+    const err = await sendP;
+    expect(err).toBeInstanceOf(TimeoutError);
   });
 
-  it('sendImage() accepts base64 string directly', async () => {
-    const t = new MockTransport();
-    const chat = new ChatAPI(t as any, 'sess-1', 'topic-1');
+  it('rejects with ChatSendFailed on error', async () => {
+    const sendP = browser.chat.send('fail test');
 
-    const promise = chat.sendImage('iVBOR==', 'image/png');
-    t.resolveNext({ message_id: 'msg-003' });
-    await promise;
-
-    const media = t.sent[0].params?.media as Record<string, unknown>;
-    expect(media.data).toBe('iVBOR==');
-  });
-
-  it('history() returns parsed messages', async () => {
-    const t = new MockTransport();
-    const chat = new ChatAPI(t as any, 'sess-1', 'topic-1');
-
-    const promise = chat.history();
-    t.resolveNext({
-      messages: [
-        { _id: 'm1', author_id: 1, author_name: 'Agent', type: 'text', content: 'hi', created_at: '2026-04-28T11:00:00Z' },
-        { _id: 'm2', author_id: 2, author_name: 'Provider', type: 'text', content: 'hello', created_at: '2026-04-28T11:01:00Z' },
-      ],
-      has_more: false,
-      next_cursor: null,
+    const chatMsg = ws.sent.find(m => m.type === 'chat.send');
+    ws.receive({
+      type: 'chat.error',
+      session_id: browser.sessionId,
+      client_msg_id: chatMsg!.client_msg_id,
+      status: 400,
+      message: 'Bad request',
     });
-    const messages = await promise;
 
-    expect(messages).toHaveLength(2);
-    expect(messages[0]._id).toBe('m1');
-    expect(messages[0].content).toBe('hi');
-    expect(messages[1].author_name).toBe('Provider');
+    await expect(sendP).rejects.toThrow(ChatSendFailed);
+  });
+});
+
+describe('chat.sendImage()', () => {
+  it('sends chat.send_image with buffer, detects MIME (PNG)', async () => {
+    const pngHeader = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    const pngBuf = Buffer.concat([pngHeader, Buffer.alloc(100)]);
+
+    const sendP = browser.chat.sendImage(pngBuf);
+
+    const imgMsg = ws.sent.find(m => m.type === 'chat.send_image');
+    expect(imgMsg).toBeDefined();
+    expect(imgMsg!.mime).toBe('image/png');
+    expect(imgMsg!.session_id).toBe(browser.sessionId);
+
+    ws.receive({
+      type: 'chat.send_ack',
+      session_id: browser.sessionId,
+      client_msg_id: imgMsg!.client_msg_id,
+      message_id: 'img-1',
+      sent_at: '2024-01-01T00:00:00Z',
+    });
+
+    const result = await sendP;
+    expect(result.messageId).toBe('img-1');
   });
 
-  it('history() returns empty when no topic', async () => {
-    const t = new MockTransport();
-    const chat = new ChatAPI(t as any, 'sess-1', null);
-    const messages = await chat.history();
-    expect(messages).toEqual([]);
+  it('sends chat.send_image from file path', async () => {
+    // Create actual temp file with JPEG header
+    vi.useRealTimers(); // need real timers for fs
+    const jpgHeader = Buffer.from([0xff, 0xd8, 0xff, 0xe0]);
+    const jpgBuf = Buffer.concat([jpgHeader, Buffer.alloc(100)]);
+    const tmpFile = path.join(os.tmpdir(), `test-chat-${Date.now()}.jpg`);
+    fs.writeFileSync(tmpFile, jpgBuf);
+    vi.useFakeTimers();
+
+    try {
+      const sendP = browser.chat.sendImage(tmpFile);
+
+      const imgMsg = ws.sent.find(m => m.type === 'chat.send_image');
+      expect(imgMsg).toBeDefined();
+      expect(imgMsg!.mime).toBe('image/jpeg');
+      expect(imgMsg!.filename).toContain('.jpg');
+
+      ws.receive({
+        type: 'chat.send_ack',
+        session_id: browser.sessionId,
+        client_msg_id: imgMsg!.client_msg_id,
+        message_id: 'img-2',
+        sent_at: '2024-01-01T00:00:00Z',
+      });
+
+      await sendP;
+    } finally {
+      vi.useRealTimers();
+      try { fs.unlinkSync(tmpFile); } catch {}
+      vi.useFakeTimers();
+    }
   });
+});
 
-  it('markRead() sends chat.read', async () => {
-    const t = new MockTransport();
-    const chat = new ChatAPI(t as any, 'sess-1', 'topic-1');
+describe('chat.history()', () => {
+  it('calls HTTP GET with correct params', async () => {
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        messages: [
+          { id: 'm1', topic_id: 'topic-1', text: 'hi', type: 'text', created_at: '2024-01-01T00:00:00Z' },
+        ],
+      }),
+    });
+    vi.stubGlobal('fetch', mockFetch);
 
-    const promise = chat.markRead('msg-last');
-    t.resolveNext({ ok: true });
-    await promise;
+    const msgs = await browser.chat.history({ limit: 5, since: '2024-01-01' });
 
-    expect(t.sent[0].method).toBe('chat.read');
-    expect(t.sent[0].params?.last_message_id).toBe('msg-last');
+    expect(mockFetch).toHaveBeenCalledOnce();
+    const [url, opts] = mockFetch.mock.calls[0];
+    expect(url).toContain('topic_id=topic-1');
+    expect(url).toContain('limit=5');
+    expect(url).toContain('since=2024-01-01');
+    expect(opts.headers.Authorization).toBe('Bearer key');
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0].text).toBe('hi');
+
+    vi.unstubAllGlobals();
   });
+});
 
-  it('typing() sends notification (no id)', async () => {
-    const t = new MockTransport();
-    const chat = new ChatAPI(t as any, 'sess-1', 'topic-1');
-
-    await chat.typing(true);
-
-    expect(t.notified[0].method).toBe('chat.typing');
-    expect(t.notified[0].params?.is_typing).toBe(true);
-    expect(t.notified[0].params?.session_id).toBe('sess-1');
-  });
-
-  it('onMessage() dispatches incoming chat.message', () => {
-    const t = new MockTransport();
-    const chat = new ChatAPI(t as any, 'sess-1', 'topic-1');
-
+describe('chat.onMessage()', () => {
+  it('dispatches incoming chat messages', () => {
     const received: ChatMessage[] = [];
-    const unsub = chat.onMessage((msg) => received.push(msg));
+    browser.chat.onMessage((msg) => {
+      received.push(msg);
+    });
 
-    chat._dispatchMessage({
-      message: {
-        _id: 'm3', topic_id: 'topic-1', author_id: 99, author_name: 'Provider',
-        type: 'text', content: 'captcha please', created_at: '2026-04-28T12:00:00Z',
+    ws.receive({
+      type: 'chat.message',
+      session_id: browser.sessionId,
+      payload: {
+        message: {
+          id: 'msg-in-1',
+          topic_id: 'topic-1',
+          sender_id: 7,
+          text: 'hello from provider',
+          type: 'text',
+          created_at: '2024-01-01T12:00:00Z',
+        },
       },
     });
 
     expect(received).toHaveLength(1);
-    expect(received[0].content).toBe('captcha please');
-    expect(received[0].author_id).toBe(99);
-
-    unsub();
-    chat._dispatchMessage({ message: { _id: 'm4', content: 'ignored' } });
-    expect(received).toHaveLength(1);
+    expect(received[0].text).toBe('hello from provider');
+    expect(received[0].sender_id).toBe(7);
   });
+});
 
-  it('onTyping() dispatches incoming chat.typing', () => {
-    const t = new MockTransport();
-    const chat = new ChatAPI(t as any, 'sess-1', 'topic-1');
+describe('chat.onRead()', () => {
+  it('dispatches read receipts', () => {
+    const receipts: Array<{ topic_id: string; last_read_message_id: string }> = [];
+    browser.chat.onRead((r) => {
+      receipts.push(r);
+    });
 
-    const events: TypingEvent[] = [];
-    const unsub = chat.onTyping((e) => events.push(e));
+    ws.receive({
+      type: 'chat.read',
+      session_id: browser.sessionId,
+      payload: {
+        topic_id: 'topic-1',
+        last_read_message_id: 'msg-5',
+        read_at: 1704067200,
+      },
+    });
 
-    chat._dispatchTyping({ user_id: 42, is_typing: true });
-
-    expect(events).toHaveLength(1);
-    expect(events[0].user_id).toBe(42);
-    expect(events[0].is_typing).toBe(true);
-
-    unsub();
-    chat._dispatchTyping({ user_id: 42, is_typing: false });
-    expect(events).toHaveLength(1);
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0].last_read_message_id).toBe('msg-5');
   });
 });

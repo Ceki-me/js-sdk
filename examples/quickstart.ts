@@ -1,12 +1,16 @@
-import { Browser } from 'ceki-browser';
+import { connect } from 'ceki-browser';
 
-const br = new Browser({ token: 'YOUR_TOKEN' });
-await br.connect();
+const client = await connect(process.env.CEKI_API_KEY!);
 
-const s = await br.openSession({ mode: 'incognito', domainHints: ['example.com'] });
-await s.navigate('https://example.com');
-const title = await s.query('h1');
-console.log(title.elements[0]?.textContent);
+const options = await client.search({ geo: 'US' });
+console.log(`Found ${options.length} browsers`);
 
-await s.close();
-await br.close();
+const browser = await client.rent(options[0].schedule_id);
+console.log(`Session: ${browser.sessionId}`);
+
+await browser.navigate('https://example.com');
+const snap = await browser.snapshot();
+console.log(`Screenshot: ${snap.screenshot.length} chars, ${snap.chat.length} messages`);
+
+await browser.close();
+await client.close();

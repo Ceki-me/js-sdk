@@ -1,21 +1,32 @@
-import { Browser } from 'ceki-browser';
+import * as fs from 'node:fs';
+import { connect } from 'ceki-browser';
 
-const br = new Browser({ token: 'YOUR_TOKEN' });
-await br.connect();
+const client = await connect(process.env.CEKI_API_KEY!);
+const browser = await client.rent(parseInt(process.env.SCHEDULE_ID!));
 
-const s = await br.openSession({ mode: 'persona', domainHints: ['app.example.com'] });
-await s.navigate('https://app.example.com/login');
+await browser.navigate('https://example.com/login');
+await browser.click(400, 300);
+await browser.type('user@example.com');
+await browser.click(400, 360);
+await browser.type('password123');
+await browser.click(400, 420);
 
-// Inject stored credentials (requires verified provider)
-await s.injectCredentials('secret-abc-123', {
-  username_selector: '#email',
-  password_selector: '#password',
-  submit_selector: '#login-btn',
-});
+const snap = await browser.snapshot();
+fs.writeFileSync('/tmp/after-login.png', Buffer.from(snap.screenshot, 'base64'));
+console.log('Screenshot saved, chat:', snap.chat.length, 'messages');
 
-// If 2FA is required, ask the browser owner to complete it
-const result = await s.requestHumanAction('2fa', 'Please enter the 2FA code from your authenticator app', 120);
-console.log(`2FA status: ${result.status}`);
+if (snap.chat.some(m => m.text?.includes('2FA'))) {
+  await browser.chat.send('Please enter the 2FA code');
+  const reply = await new Promise<string>((resolve) => {
+    browser.chat.onMessage(msg => {
+      if (msg.text) resolve(msg.text);
+    });
+  });
+  console.log('Provider replied:', reply);
+}
 
-await s.close();
-await br.close();
+const profile = await browser.profile.export({ domains: ['example.com'] });
+fs.writeFileSync('/tmp/login-profile.json', JSON.stringify(profile, null, 2));
+
+await browser.close();
+await client.close();

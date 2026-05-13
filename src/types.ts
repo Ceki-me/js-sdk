@@ -1,64 +1,94 @@
-export interface QueryResult {
-  elements: Record<string, string | null>[];
-}
-
-export interface NavigateResult {
-  url: string;
-  title: string;
-  status: number;
-}
-
-export interface ScreenshotResult {
-  data: string;
-  width: number;
-  height: number;
-}
-
-export interface HtmlResult {
-  html: string;
-}
-
-export interface HumanActionResult {
-  status: string;
-  requestId: string;
-}
-
-export interface SessionOptions {
-  mode?: string;
-  domainHints?: string[];
-  geo?: string;
-  language?: string;
-  maxPricePerMin?: number;
-  estimatedDurationMin?: number;
-  waitTimeout?: number;
-}
-
-export interface BrowserOptions {
-  token: string;
+export interface ConnectOptions {
+  apiUrl?: string;
   relayUrl?: string;
+  chatUrl?: string;
+  basicAuth?: [string, string];
+  reconnect?: boolean;
+}
+
+export interface BrowserOption {
+  schedule_id: number;
+  user_id?: number | null;
+  geo?: string | null;
+  language?: string | null;
+  languages?: string[];
+  domain_allowed?: string[] | null;
+  skills?: string[];
+  price_per_min: number;
+  rating?: number | null;
+  online: boolean;
+  currency?: string | null;
+  kal_id?: number | null;
+}
+
+export interface Match {
+  session_id: string;
+  schedule_id: number;
+  event_id?: string | null;
+  chat_topic_id?: string | null;
+  provider_user_id?: number | null;
+  started_at?: number;
+  browser_info?: Record<string, unknown>;
 }
 
 export interface ChatMessage {
-  _id: string;
+  id: string;
   topic_id: string;
-  author_id: number;
-  author_name: string;
-  type: 'text' | 'image' | 'file';
-  content: string;
-  media?: { url: string; mime: string; name: string; size?: number } | null;
+  sender_id?: number | null;
+  text?: string | null;
+  media?: Record<string, unknown>[] | null;
+  type: string;
   created_at: string;
+  edited_at?: string | null;
+  deleted_at?: string | null;
 }
 
-export interface TypingEvent {
-  user_id: number;
-  is_typing: boolean;
+export interface ReadReceipt {
+  topic_id: string;
+  last_read_message_id: string;
+  read_at: number;
 }
 
-export interface JsonRpcMessage {
-  jsonrpc: '2.0';
-  method?: string;
-  params?: Record<string, unknown>;
-  id?: number | string | null;
-  result?: unknown;
-  error?: { code: number; message: string };
+export interface Snapshot {
+  screenshot: string;
+  chat: ChatMessage[];
+  ts: Date;
+}
+
+export interface Profile {
+  schema_version: number;
+  fingerprint?: Record<string, unknown> | null;
+  origin?: string;
+  cookies?: Record<string, unknown>[];
+  localStorage?: Record<string, string>;
+  sessionStorage?: Record<string, string>;
+}
+
+export interface RentOptions {
+  human?: 'natural' | 'careful' | null;
+  maskingMode?: boolean;
+  fingerprint?: boolean | Record<string, unknown>;
+}
+
+export interface ScreenshotOptions {
+  format?: 'base64' | 'png';
+  fullPage?: boolean;
+}
+
+export interface ScrollOptions {
+  x?: number;
+  y?: number;
+  deltaX?: number;
+  deltaY?: number;
+}
+
+export interface ProfileExportOptions {
+  domains?: string[];
+  includeSessionStorage?: boolean;
+}
+
+export interface ChatHistoryOptions {
+  limit?: number;
+  beforeId?: string;
+  since?: string;
 }
