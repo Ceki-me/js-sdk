@@ -7,6 +7,7 @@ import type { Client } from './client.js';
 
 import { Humanizer } from './humanize/humanizer.js';
 import { HumanProfile } from './humanize/profile.js';
+import { keymapForChar } from './humanize/keymap.js';
 export type { Humanizer, HumanProfile };
 
 interface PendingCdp {
@@ -146,6 +147,44 @@ export class Browser {
     if (this._humanizer) await this._humanizer.after('click');
   }
 
+  private async _sendKeystroke(char: string): Promise<void> {
+    const mapping = keymapForChar(char);
+    if (!mapping) {
+      await this.send({ method: 'Input.insertText', params: { text: char } });
+      return;
+    }
+    const { code, key, vk, needsShift } = mapping;
+    if (needsShift) {
+      await this.send({
+        method: 'Input.dispatchKeyEvent',
+        params: { type: 'keyDown', key: 'Shift', code: 'ShiftLeft', windowsVirtualKeyCode: 16, nativeVirtualKeyCode: 16 },
+      });
+    }
+    await this.send({
+      method: 'Input.dispatchKeyEvent',
+      params: {
+        type: 'keyDown', key, code, text: char,
+        unmodifiedText: needsShift ? char.toLowerCase() : char,
+        windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk,
+        ...(needsShift ? { modifiers: 8 } : {}),
+      },
+    });
+    await this.send({
+      method: 'Input.dispatchKeyEvent',
+      params: {
+        type: 'keyUp', key, code,
+        windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk,
+        ...(needsShift ? { modifiers: 8 } : {}),
+      },
+    });
+    if (needsShift) {
+      await this.send({
+        method: 'Input.dispatchKeyEvent',
+        params: { type: 'keyUp', key: 'Shift', code: 'ShiftLeft', windowsVirtualKeyCode: 16, nativeVirtualKeyCode: 16 },
+      });
+    }
+  }
+
   async type(text: string): Promise<void> {
     if (this._humanizer) {
       await this._humanizer.before('type');
@@ -165,10 +204,7 @@ export class Browser {
 
       // Type char-by-char with delays
       for (const char of text) {
-        await this.send({
-          method: 'Input.insertText',
-          params: { text: char },
-        });
+        await this._sendKeystroke(char);
         const delay = this._humanizer.typeDelay();
         if (delay > 0) {
           await new Promise<void>(r => setTimeout(r, delay));
@@ -177,10 +213,9 @@ export class Browser {
 
       await this._humanizer.after('type');
     } else {
-      await this.send({
-        method: 'Input.insertText',
-        params: { text },
-      });
+      for (const char of text) {
+        await this._sendKeystroke(char);
+      }
     }
   }
 

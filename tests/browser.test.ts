@@ -97,19 +97,23 @@ describe('click()', () => {
 });
 
 describe('type()', () => {
-  it('without humanizer sends single Input.insertText', async () => {
+  it('without humanizer sends dispatchKeyEvent per char', async () => {
     autoRespondCdp({});
 
     await browser.type('hello');
 
-    const insertMsgs = ws.sent.filter(
-      m => m.type === 'cdp' && m.method === 'Input.insertText',
+    const keyEvents = ws.sent.filter(
+      m => m.type === 'cdp' && m.method === 'Input.dispatchKeyEvent',
     );
-    expect(insertMsgs).toHaveLength(1);
-    expect((insertMsgs[0].params as Record<string, unknown>).text).toBe('hello');
+    const keyDowns = keyEvents.filter(m => (m.params as Record<string, unknown>).type === 'keyDown');
+    const keyUps = keyEvents.filter(m => (m.params as Record<string, unknown>).type === 'keyUp');
+    expect(keyDowns).toHaveLength(5);
+    expect(keyUps).toHaveLength(5);
+    expect((keyDowns[0].params as Record<string, unknown>).text).toBe('h');
+    expect((keyDowns[0].params as Record<string, unknown>).code).toBe('KeyH');
   });
 
-  it('with humanizer sends char-by-char with delays', async () => {
+  it('with humanizer sends char-by-char dispatchKeyEvent with delays', async () => {
     const { Humanizer } = await import('../src/humanize/humanizer.js');
     const { HumanProfile } = await import('../src/humanize/profile.js');
     const humanProfile = HumanProfile.fromDict({
@@ -128,13 +132,42 @@ describe('type()', () => {
     await vi.advanceTimersByTimeAsync(500);
     await typeP;
 
+    const keyEvents = ws.sent.filter(
+      m => m.type === 'cdp' && m.method === 'Input.dispatchKeyEvent',
+    );
+    const keyDowns = keyEvents.filter(m => (m.params as Record<string, unknown>).type === 'keyDown');
+    expect(keyDowns.length).toBe(2);
+    expect((keyDowns[0].params as Record<string, unknown>).text).toBe('a');
+    expect((keyDowns[1].params as Record<string, unknown>).text).toBe('b');
+  });
+
+  it('uppercase chars include Shift keyDown/keyUp', async () => {
+    autoRespondCdp({});
+
+    await browser.type('Hi');
+
+    const keyEvents = ws.sent.filter(
+      m => m.type === 'cdp' && m.method === 'Input.dispatchKeyEvent',
+    );
+    // H: Shift down, H down, H up, Shift up = 4
+    // i: i down, i up = 2
+    // Total = 6
+    expect(keyEvents).toHaveLength(6);
+    expect((keyEvents[0].params as Record<string, unknown>).key).toBe('Shift');
+    expect((keyEvents[1].params as Record<string, unknown>).key).toBe('H');
+    expect((keyEvents[1].params as Record<string, unknown>).modifiers).toBe(8);
+  });
+
+  it('non-ASCII falls back to Input.insertText', async () => {
+    autoRespondCdp({});
+
+    await browser.type('ы');
+
     const insertMsgs = ws.sent.filter(
       m => m.type === 'cdp' && m.method === 'Input.insertText',
     );
-    // Should have 2 chars typed individually
-    expect(insertMsgs.length).toBe(2);
-    expect((insertMsgs[0].params as Record<string, unknown>).text).toBe('a');
-    expect((insertMsgs[1].params as Record<string, unknown>).text).toBe('b');
+    expect(insertMsgs).toHaveLength(1);
+    expect((insertMsgs[0].params as Record<string, unknown>).text).toBe('ы');
   });
 });
 
