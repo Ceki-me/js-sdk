@@ -205,6 +205,15 @@ export class Client {
     this._closeWs();
   }
 
+  async disconnect(): Promise<void> {
+    this._closed = true;
+    this._activeBrowsers.clear();
+    this._pendingRents.clear();
+    this._pendingResumes.clear();
+    this._stopHeartbeat();
+    this._closeWs();
+  }
+
   // --- Private methods ---
 
   private async _connect(): Promise<void> {

@@ -227,3 +227,20 @@ describe('close()', () => {
     expect(ws.readyState).toBe(3);
   });
 });
+
+describe('disconnect()', () => {
+  it('closes WS without sending session.end', async () => {
+    const client = await createClient();
+    const ws = MockWebSocket.last();
+
+    const rentPromise = client.rent(1);
+    ws.receive({ type: 'rent_pending', event_id: 'e1' });
+    ws.receive({ type: 'match', event_id: 'e1', schedule_id: 1, session_id: 's1' });
+    await rentPromise;
+
+    await client.disconnect();
+    const sessionEndSent = ws.sent.some(m => m.type === 'session.end');
+    expect(sessionEndSent).toBe(false);
+    expect(ws.readyState).toBe(3);
+  });
+});
