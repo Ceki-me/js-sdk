@@ -128,11 +128,11 @@ describe('rent()', () => {
     await expect(rentPromise).rejects.toThrow(ProviderOffline);
   });
 
-  it('rejects with TimeoutError after 60s', async () => {
+  it('rejects with TimeoutError after 90s', async () => {
     const client = await createClient();
 
     const rentPromise = client.rent(42).catch(e => e);
-    await vi.advanceTimersByTimeAsync(61_000);
+    await vi.advanceTimersByTimeAsync(91_000);
 
     const err = await rentPromise;
     expect(err).toBeInstanceOf(TimeoutError);

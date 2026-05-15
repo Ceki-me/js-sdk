@@ -128,8 +128,8 @@ export class Client {
     return new Promise<Browser>((resolve, reject) => {
       const timer = setTimeout(() => {
         this._pendingRents.delete(key);
-        reject(new TimeoutError('Rent timed out after 60s'));
-      }, 60000);
+        reject(new TimeoutError('Rent timed out after 90s'));
+      }, 90000);
 
       this._pendingRents.set(key, {
         scheduleId,
