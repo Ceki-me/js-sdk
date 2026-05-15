@@ -121,7 +121,7 @@ export class Client {
   }
 
   async rent(scheduleId: number, opts?: RentOptions): Promise<Browser> {
-    this._wsSend({ type: 'rent', schedule_id: scheduleId });
+    this._wsSend({ type: 'rent', browser_id: scheduleId });
 
     const key = `rent:${scheduleId}`;
 

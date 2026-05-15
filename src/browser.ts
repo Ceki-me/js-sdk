@@ -22,6 +22,7 @@ type VoidHandler = () => void;
 
 export class Browser {
   readonly sessionId: string;
+  readonly browserId: number;
   readonly scheduleId: number;
   readonly chatTopicId: string | null;
   readonly browserInfo: Record<string, unknown>;
@@ -63,6 +64,7 @@ export class Browser {
   constructor(client: Client, match: Match, humanizer?: Humanizer | null) {
     this._client = client;
     this.sessionId = match.session_id;
+    this.browserId = match.schedule_id;
     this.scheduleId = match.schedule_id;
     this.chatTopicId = match.chat_topic_id ?? null;
     this.browserInfo = match.browser_info ?? {};

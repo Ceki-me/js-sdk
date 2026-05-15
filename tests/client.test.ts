@@ -89,7 +89,7 @@ describe('rent()', () => {
 
     const rentPromise = client.rent(42);
 
-    expect(ws.sent).toContainEqual({ type: 'rent', schedule_id: 42 });
+    expect(ws.sent).toContainEqual({ type: 'rent', browser_id: 42 });
 
     // Server sends rent_pending
     ws.receive({ type: 'rent_pending', event_id: 'evt-1' });
