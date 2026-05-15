@@ -46,7 +46,7 @@ async function resumeBrowser(apiKey: string, sessionId: string): Promise<[Client
 }
 
 async function closeClient(client: Client): Promise<void> {
-  try { await client.close(); } catch { /* ignore */ }
+  try { await client.disconnect(); } catch { /* ignore */ }
 }
 
 function parseBool(val: string): boolean {

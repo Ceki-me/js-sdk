@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { execFile } from 'node:child_process';
+import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 const CLI_PATH = path.resolve('/home/node/.openclaw/ceki-plugin/js-sdk/dist/cli.js');
@@ -37,13 +38,13 @@ describe('CLI', () => {
   it('--version exits 0, prints version', async () => {
     const r = await run(['--version']);
     expect(r.code).toBe(0);
-    expect(r.stdout.trim()).toBe('1.0.0');
+    expect(r.stdout.trim()).toBe('1.2.0');
   });
 
   it('-v also prints version', async () => {
     const r = await run(['-v']);
     expect(r.code).toBe(0);
-    expect(r.stdout.trim()).toBe('1.0.0');
+    expect(r.stdout.trim()).toBe('1.2.0');
   });
 
   it('missing CEKI_API_KEY exits 2 with error JSON on stderr', async () => {
@@ -71,5 +72,13 @@ describe('CLI', () => {
     const r = await run([]);
     expect(r.code).toBe(0);
     expect(r.stdout).toContain('Usage:');
+  });
+
+  it('closeClient uses disconnect(), not close()', () => {
+    const src = fs.readFileSync(path.resolve(__dirname, '../src/cli.ts'), 'utf-8');
+    const closeClientMatch = src.match(/async function closeClient[\s\S]*?\n\}/);
+    expect(closeClientMatch).not.toBeNull();
+    expect(closeClientMatch![0]).toContain('client.disconnect()');
+    expect(closeClientMatch![0]).not.toContain('client.close()');
   });
 });
