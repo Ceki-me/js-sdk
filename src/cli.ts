@@ -58,9 +58,18 @@ function parseBool(val: string): boolean {
 async function cmdRent(args: string[]): Promise<void> {
   let scheduleId: number | null = null;
   let fingerprintFrom: string | null = null;
+  let mode: 'incognito' | 'main' = 'incognito';
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--schedule' && args[i + 1]) scheduleId = parseInt(args[++i], 10);
     if (args[i] === '--fingerprint-from' && args[i + 1]) fingerprintFrom = args[++i];
+    if (args[i] === '--mode' && args[i + 1]) {
+      const v = args[++i];
+      if (v !== 'incognito' && v !== 'main') {
+        err('invalid mode, must be incognito or main', 'args');
+        process.exit(1);
+      }
+      mode = v;
+    }
   }
   if (scheduleId == null) {
     err('--schedule is required', 'args');
@@ -76,7 +85,7 @@ async function cmdRent(args: string[]): Promise<void> {
 
   const client = await connect(apiKey, connectOptions());
   try {
-    const browser = await client.rent(scheduleId, { human: null, fingerprint: fpData });
+    const browser = await client.rent(scheduleId, { human: null, fingerprint: fpData, mode });
     saveSession(browser.sessionId, {
       session_id: browser.sessionId,
       chat_topic_id: browser.chatTopicId,

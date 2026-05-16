@@ -70,6 +70,7 @@ export interface RentOptions {
   human?: 'natural' | 'careful' | null;
   maskingMode?: boolean;
   fingerprint?: boolean | Record<string, unknown>;
+  mode?: 'incognito' | 'main';
 }
 
 export interface ScreenshotOptions {

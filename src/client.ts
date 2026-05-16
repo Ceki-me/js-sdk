@@ -140,7 +140,9 @@ export class Client {
   }
 
   async rent(scheduleId: number, opts?: RentOptions): Promise<Browser> {
-    this._wsSend({ type: 'rent', browser_id: scheduleId });
+    const rentMsg: Record<string, unknown> = { type: 'rent', browser_id: scheduleId };
+    if (opts?.mode) rentMsg.mode = opts.mode;
+    this._wsSend(rentMsg);
 
     const key = `rent:${scheduleId}`;
 
