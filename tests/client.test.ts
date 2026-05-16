@@ -17,7 +17,10 @@ vi.mock('../src/state.js', () => ({
 
 import { Client, connect } from '../src/client.js';
 import {
+  CekiBrowserError,
+  InsufficientFunds,
   ProviderOffline,
+  RateLimitExceeded,
   TimeoutError,
   SessionExpired,
   NotOwner,
@@ -199,6 +202,66 @@ describe('resume()', () => {
 
     const err = await resumePromise;
     expect(err).toBeInstanceOf(TimeoutError);
+  });
+});
+
+describe('generic error dispatch', () => {
+  it('rejects pending rent with CekiBrowserError on generic error code -1014', async () => {
+    const client = await createClient();
+    const ws = MockWebSocket.last();
+
+    const rentPromise = client.rent(42);
+    ws.receive({ type: 'rent_pending', event_id: 'evt-err' });
+    ws.receive({
+      type: 'error',
+      code: -1014,
+      message: 'Insufficient balance',
+    });
+
+    await expect(rentPromise).rejects.toThrow(CekiBrowserError);
+    await expect(rentPromise).rejects.toThrow('Insufficient balance');
+  });
+
+  it('rejects pending rent with InsufficientFunds on error code -1012', async () => {
+    const client = await createClient();
+    const ws = MockWebSocket.last();
+
+    const rentPromise = client.rent(42);
+    ws.receive({
+      type: 'error',
+      code: -1012,
+      message: 'Not enough funds',
+    });
+
+    await expect(rentPromise).rejects.toThrow(InsufficientFunds);
+  });
+
+  it('rejects pending rent with RateLimitExceeded on error code -1013', async () => {
+    const client = await createClient();
+    const ws = MockWebSocket.last();
+
+    const rentPromise = client.rent(42);
+    ws.receive({
+      type: 'error',
+      code: -1013,
+      message: 'Rate limited',
+    });
+
+    await expect(rentPromise).rejects.toThrow(RateLimitExceeded);
+  });
+
+  it('rejects pending rent with ProviderOffline on error code -1015', async () => {
+    const client = await createClient();
+    const ws = MockWebSocket.last();
+
+    const rentPromise = client.rent(42);
+    ws.receive({
+      type: 'error',
+      code: -1015,
+      message: 'No providers available',
+    });
+
+    await expect(rentPromise).rejects.toThrow(ProviderOffline);
   });
 });
 

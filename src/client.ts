@@ -1,6 +1,7 @@
 import WebSocket from 'ws';
 import { resolveConfig } from './config.js';
 import {
+  CekiBrowserError,
   AuthError,
   SessionNotFound,
   SessionExpired,
@@ -641,17 +642,34 @@ export class Client {
     }
 
     // Global errors — reject pending operations
+    let err: CekiBrowserError;
     switch (code) {
-      case -1012: {
-        const err = new InsufficientFunds(reason);
+      case -1012:
+        err = new InsufficientFunds(reason);
         this._rejectAllPending(err);
         break;
-      }
-      case -1013: {
-        const err = new RateLimitExceeded(0, reason);
+      case -1013:
+        err = new RateLimitExceeded(0, reason);
         this._rejectAllPending(err);
         break;
-      }
+      case -1015:
+        err = new ProviderOffline(reason);
+        this._rejectFirstPendingRent(err);
+        break;
+      default:
+        err = new CekiBrowserError(reason || `relay error ${code}`);
+        this._rejectFirstPendingRent(err);
+        break;
+    }
+  }
+
+  private _rejectFirstPendingRent(err: Error): void {
+    const eventId = this._pendingRents.keys().next().value;
+    if (eventId != null) {
+      const pending = this._pendingRents.get(eventId)!;
+      clearTimeout(pending.timer);
+      this._pendingRents.delete(eventId);
+      pending.reject(err);
     }
   }
 
