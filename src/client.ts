@@ -120,6 +120,24 @@ export class Client {
     return (Array.isArray(data) ? data : []) as BrowserOption[];
   }
 
+  async myBrowsers(): Promise<BrowserOption[]> {
+    const url = `${this._apiUrl}/api/agent/browsers`;
+    const headers: Record<string, string> = {
+      'Authorization': `Bearer ${this._apiKey}`,
+    };
+    if (this._basicAuth) {
+      const encoded = Buffer.from(`${this._basicAuth[0]}:${this._basicAuth[1]}`).toString('base64');
+      headers['X-Basic-Auth'] = `Basic ${encoded}`;
+    }
+    const resp = await fetch(url, { headers });
+    if (!resp.ok) {
+      throw new TransportError(`myBrowsers request failed: ${resp.status} ${resp.statusText}`);
+    }
+    const body = await resp.json();
+    const items = (body as Record<string, unknown>).browsers ?? (body as Record<string, unknown>).data ?? body;
+    return (Array.isArray(items) ? items : []) as BrowserOption[];
+  }
+
   async rent(scheduleId: number, opts?: RentOptions): Promise<Browser> {
     this._wsSend({ type: 'rent', browser_id: scheduleId });
 

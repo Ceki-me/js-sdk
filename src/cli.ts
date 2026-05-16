@@ -114,6 +114,17 @@ async function cmdSearch(args: string[]): Promise<void> {
   }
 }
 
+async function cmdMyBrowsers(): Promise<void> {
+  const apiKey = getApiKey();
+  const client = await connect(apiKey, connectOptions());
+  try {
+    const results = await client.myBrowsers();
+    out(results);
+  } finally {
+    await closeClient(client);
+  }
+}
+
 async function cmdSnapshot(sid: string, args: string[]): Promise<void> {
   let outputPath: string | null = null;
   for (let i = 0; i < args.length; i++) {
@@ -502,6 +513,7 @@ Usage: ceki-browser <command> [options]
 
 Commands:
   rent --schedule N [--fingerprint-from PATH]
+  my-browsers
   search [--limit N] [--filter k=v]...
   snapshot <sid> -o PATH
   screenshot <sid> -o PATH [--full]
@@ -562,6 +574,9 @@ async function main(): Promise<void> {
       break;
     case 'search':
       await cmdSearch(rest);
+      break;
+    case 'my-browsers':
+      await cmdMyBrowsers();
       break;
     case 'snapshot':
       await cmdSnapshot(rest[0], rest.slice(1));

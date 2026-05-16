@@ -19,6 +19,8 @@ export interface BrowserOption {
   online: boolean;
   currency?: string | null;
   kal_id?: number | null;
+  profile_mode?: 'main' | 'incognito' | null;
+  allowed_domains?: string[] | null;
 }
 
 export interface Match {
