@@ -19,6 +19,7 @@ interface PendingCdp {
 type EventHandler = (method: string, params: Record<string, unknown>) => void;
 type TabHandler = (url: string) => void;
 type VoidHandler = () => void;
+type UserEventHandler = (events: Record<string, unknown>[]) => void;
 
 export class Browser {
   readonly sessionId: string;
@@ -45,6 +46,7 @@ export class Browser {
   private _tabHandlers: TabHandler[] = [];
   private _disconnectHandlers: VoidHandler[] = [];
   private _reconnectHandlers: VoidHandler[] = [];
+  private _userEventHandlers: UserEventHandler[] = [];
 
   /** @internal */
   get _apiKey(): string {
@@ -399,6 +401,10 @@ export class Browser {
     this._reconnectHandlers.push(cb);
   }
 
+  onUserEvent(cb: UserEventHandler): void {
+    this._userEventHandlers.push(cb);
+  }
+
   // --- Internal handlers called by Client dispatch ---
 
   /** @internal */
@@ -473,6 +479,14 @@ export class Browser {
     this._resolveEnded(reason);
     this._rejectAllPending(new SessionEnded(reason));
     this._cleanup();
+  }
+
+  /** @internal */
+  _onUserEvents(msg: Record<string, unknown>): void {
+    const events = (msg.events ?? []) as Record<string, unknown>[];
+    for (const h of this._userEventHandlers) {
+      try { h(events); } catch { /* ignore */ }
+    }
   }
 
   /** @internal */

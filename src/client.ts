@@ -457,6 +457,13 @@ export class Client {
         }
         break;
 
+      case 'user_events':
+        if (sessionId) {
+          const browser = this._activeBrowsers.get(sessionId);
+          browser?._onUserEvents(msg);
+        }
+        break;
+
       case 'chat.message':
         if (sessionId) {
           const browser = this._activeBrowsers.get(sessionId);
