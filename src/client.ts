@@ -517,6 +517,11 @@ export class Client {
   private _onMatch(msg: Record<string, unknown>): void {
     const eventId = String(msg.event_id ?? '');
     const scheduleId = Number(msg.schedule_id ?? 0);
+    const sessionId = String(msg.session_id ?? '');
+
+    if (msg.requires_ack) {
+      try { this._wsSend({ type: 'match_ack', session_id: sessionId }); } catch { /* ignore */ }
+    }
 
     // Try eventId match first
     let pending = this._pendingRents.get(`event:${eventId}`);
@@ -531,7 +536,7 @@ export class Client {
       this._pendingRents.delete(key);
 
       const match: Match = {
-        session_id: String(msg.session_id ?? ''),
+        session_id: sessionId,
         schedule_id: scheduleId,
         event_id: eventId || null,
         chat_topic_id: msg.chat_topic_id ? String(msg.chat_topic_id) : null,
