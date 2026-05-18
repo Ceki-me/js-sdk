@@ -102,6 +102,22 @@ export class CdpUnrecoverable extends CekiBrowserError {
   }
 }
 
+export class CaptchaError extends CekiBrowserError {
+  constructor(message = 'Captcha error') {
+    super(message);
+    this.name = 'CaptchaError';
+  }
+}
+
+export class CaptchaTimeoutError extends CaptchaError {
+  phase: 'acceptance' | 'completion';
+  constructor(phase: 'acceptance' | 'completion') {
+    super(`Captcha timeout: ${phase}`);
+    this.name = 'CaptchaTimeoutError';
+    this.phase = phase;
+  }
+}
+
 export class ChatSendFailed extends CekiBrowserError {
   status: number;
   messageText: string;

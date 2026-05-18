@@ -20,6 +20,8 @@ export {
   ProviderDisconnected,
   CdpUnrecoverable,
   ChatSendFailed,
+  CaptchaError,
+  CaptchaTimeoutError,
 } from './errors.js';
 export type {
   ConnectOptions,
@@ -34,4 +36,6 @@ export type {
   ScrollOptions,
   ProfileExportOptions,
   ChatHistoryOptions,
+  CaptchaOptions,
+  CaptchaResult,
 } from './types.js';

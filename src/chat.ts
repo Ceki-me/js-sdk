@@ -40,6 +40,7 @@ export class BrowserChat {
   private _messageHandlers: MessageHandler[] = [];
   private _readHandlers: ReadHandler[] = [];
   private _pendingSends: Map<string, PendingSend> = new Map();
+  /** @internal */ _actionCallbacks: Map<number, (action: Record<string, unknown>) => void> = new Map();
 
   constructor(browser: Browser) {
     this._browser = browser;
@@ -156,6 +157,13 @@ export class BrowserChat {
   /** @internal */
   _onMessage(payload: Record<string, unknown>): void {
     const msgData = (payload.message ?? payload) as Record<string, unknown>;
+    if (msgData.type === 'action' && msgData.action) {
+      const action = msgData.action as Record<string, unknown>;
+      const eventId = Number(action.event_id);
+      if (eventId && this._actionCallbacks.has(eventId)) {
+        this._actionCallbacks.get(eventId)!(action);
+      }
+    }
     const msg = parseChatMessage(msgData);
     for (const h of this._messageHandlers) {
       try {
@@ -216,6 +224,7 @@ export class BrowserChat {
 }
 
 function parseChatMessage(data: Record<string, unknown>): ChatMessage {
+  const action = data.action as Record<string, unknown> | undefined;
   return {
     id: String(data.id ?? data._id ?? data.message_id ?? ''),
     topic_id: String(data.topic_id ?? ''),
@@ -226,5 +235,10 @@ function parseChatMessage(data: Record<string, unknown>): ChatMessage {
     created_at: String(data.created_at ?? ''),
     edited_at: data.edited_at != null ? String(data.edited_at) : null,
     deleted_at: data.deleted_at != null ? String(data.deleted_at) : null,
+    action: action ? {
+      kind: String(action.kind ?? ''),
+      event_id: Number(action.event_id ?? 0),
+      data: (action.data as Record<string, unknown>) ?? undefined,
+    } : null,
   };
 }

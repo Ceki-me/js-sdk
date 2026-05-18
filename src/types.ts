@@ -43,6 +43,11 @@ export interface ChatMessage {
   created_at: string;
   edited_at?: string | null;
   deleted_at?: string | null;
+  action?: {
+    kind: string;
+    event_id: number;
+    data?: Record<string, unknown>;
+  } | null;
 }
 
 export interface ReadReceipt {
@@ -94,4 +99,19 @@ export interface ChatHistoryOptions {
   limit?: number;
   beforeId?: string;
   since?: string;
+}
+
+export interface CaptchaOptions {
+  acceptanceTimeout?: number;
+  completionTimeout?: number;
+  autoAccept?: boolean;
+}
+
+export interface CaptchaResult {
+  solved: boolean;
+  proofMessageId: string | null;
+  cancelReason: string | null;
+  childEventId: number;
+  acceptWork: () => Promise<void>;
+  rejectWork: (reason?: string) => Promise<void>;
 }

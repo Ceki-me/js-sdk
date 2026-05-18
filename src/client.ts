@@ -49,7 +49,7 @@ export class Client {
   /** @internal */ _activeBrowsers: Map<string, Browser> = new Map();
 
   private _ws: WebSocket | null = null;
-  private _apiUrl: string;
+  /** @internal */ _apiUrl: string;
   private _relayUrl: string;
   private _reconnect: boolean;
   private _reconnectAttempt = 0;

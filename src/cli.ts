@@ -6,6 +6,7 @@ import { connect } from './client.js';
 import {
   CekiBrowserError,
   AuthError,
+  CaptchaTimeoutError,
   SessionNotFound,
   SessionExpired,
   NotOwner,
@@ -486,6 +487,39 @@ async function cmdCdp(sid: string, args: string[]): Promise<void> {
   }
 }
 
+async function cmdRequestCaptcha(sid: string, args: string[]): Promise<void> {
+  let acceptance = 60;
+  let completion = 120;
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--acceptance' && args[i + 1]) acceptance = parseFloat(args[++i]);
+    if (args[i] === '--completion' && args[i + 1]) completion = parseFloat(args[++i]);
+  }
+  const apiKey = getApiKey();
+  const [client, browser] = await resumeBrowser(apiKey, sid);
+  try {
+    const result = await browser.requestCaptcha({
+      acceptanceTimeout: acceptance,
+      completionTimeout: completion,
+      autoAccept: true,
+    });
+    out({
+      solved: result.solved,
+      proof_message_id: result.proofMessageId,
+      cancel_reason: result.cancelReason,
+      child_event_id: result.childEventId,
+    });
+    if (!result.solved) process.exit(1);
+  } catch (e) {
+    if (e instanceof CaptchaTimeoutError) {
+      out({ solved: false, cancel_reason: `timeout:${e.phase}`, child_event_id: null });
+      process.exit(1);
+    }
+    throw e;
+  } finally {
+    await closeClient(client);
+  }
+}
+
 async function cmdUpload(sid: string, args: string[]): Promise<void> {
   let selector: string | null = null;
   let filePath: string | null = null;
@@ -534,6 +568,7 @@ Commands:
   configure <sid> [--masking-mode true|false] [--fingerprint true|false]
   cdp <sid> --method <M> [--params JSON]
   upload <sid> --selector CSS --file PATH [--filename NAME]
+  request-captcha <sid> [--acceptance N] [--completion M]
   wait <sid>
   chat <sid> send "<text>"
   chat <sid> send-image --image PATH [--text "..."]
@@ -613,6 +648,9 @@ async function main(): Promise<void> {
       break;
     case 'upload':
       await cmdUpload(rest[0], rest.slice(1));
+      break;
+    case 'request-captcha':
+      await cmdRequestCaptcha(rest[0], rest.slice(1));
       break;
     case 'wait':
       await cmdWait(rest[0]);

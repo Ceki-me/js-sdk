@@ -1,8 +1,8 @@
-import { TimeoutError, SessionEnded } from './errors.js';
+import { TimeoutError, SessionEnded, CaptchaTimeoutError } from './errors.js';
 import { BrowserChat } from './chat.js';
 import { BrowserProfile } from './profile.js';
 import { saveSession, getLastSeenTs, updateLastSeenTs } from './state.js';
-import type { Match, ScreenshotOptions, ScrollOptions, Snapshot, ChatMessage } from './types.js';
+import type { Match, ScreenshotOptions, ScrollOptions, Snapshot, ChatMessage, CaptchaOptions, CaptchaResult } from './types.js';
 import type { Client } from './client.js';
 
 import { Humanizer } from './humanize/humanizer.js';
@@ -28,6 +28,7 @@ export class Browser {
   readonly chatTopicId: string | null;
   readonly browserInfo: Record<string, unknown>;
   readonly providerUserId: number | null;
+  /** @internal */ _eventId: string | null;
 
   readonly chat: BrowserChat;
   readonly profile: BrowserProfile;
@@ -71,6 +72,7 @@ export class Browser {
     this.chatTopicId = match.chat_topic_id ?? null;
     this.browserInfo = match.browser_info ?? {};
     this.providerUserId = match.provider_user_id ?? null;
+    this._eventId = match.event_id ?? null;
     this._humanizer = humanizer ?? null;
 
     this.chat = new BrowserChat(this);
@@ -403,6 +405,220 @@ export class Browser {
 
   onUserEvent(cb: UserEventHandler): void {
     this._userEventHandlers.push(cb);
+  }
+
+  // --- Captcha / human action ---
+
+  private _apiHeaders(): Record<string, string> {
+    const headers: Record<string, string> = {
+      'Authorization': `Bearer ${this._apiKey}`,
+      'Content-Type': 'application/json',
+    };
+    const basicAuth = this._basicAuth;
+    if (basicAuth) {
+      const encoded = Buffer.from(`${basicAuth[0]}:${basicAuth[1]}`).toString('base64');
+      headers['X-Basic-Auth'] = `Basic ${encoded}`;
+    }
+    return headers;
+  }
+
+  async requestCaptcha(opts?: CaptchaOptions): Promise<CaptchaResult> {
+    let acceptanceTimeout = opts?.acceptanceTimeout ?? 60;
+    let completionTimeout = opts?.completionTimeout ?? 120;
+    const autoAccept = opts?.autoAccept ?? true;
+
+    if (acceptanceTimeout < 30) throw new Error('acceptanceTimeout must be >= 30 seconds');
+    if (completionTimeout < 30) throw new Error('completionTimeout must be >= 30 seconds');
+
+    acceptanceTimeout = Math.min(acceptanceTimeout, 300);
+    completionTimeout = Math.min(completionTimeout, 600);
+
+    const childEventId = await this._createCaptchaEvent(acceptanceTimeout, completionTimeout);
+    const completionDeadline = Date.now() + completionTimeout * 1000;
+
+    const buffer: Record<string, unknown>[] = [];
+    let waiter: ((action: Record<string, unknown>) => void) | null = null;
+
+    this.chat._actionCallbacks.set(childEventId, (action) => {
+      if (waiter) {
+        const w = waiter;
+        waiter = null;
+        w(action);
+      } else {
+        buffer.push(action);
+      }
+    });
+
+    const nextAction = (timeoutMs: number): Promise<Record<string, unknown>> => {
+      if (buffer.length > 0) return Promise.resolve(buffer.shift()!);
+      return new Promise<Record<string, unknown>>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          waiter = null;
+          reject(new Error('timeout'));
+        }, timeoutMs);
+        waiter = (action) => {
+          clearTimeout(timer);
+          resolve(action);
+        };
+      });
+    };
+
+    const cleanup = () => {
+      this.chat._actionCallbacks.delete(childEventId);
+      waiter = null;
+    };
+
+    const makeResult = async (
+      data: Record<string, unknown>,
+      solved: boolean,
+    ): Promise<CaptchaResult> => {
+      const correctionId = data.correction_id != null ? Number(data.correction_id) : null;
+      const proofMessageId = data.proof_message_id != null ? String(data.proof_message_id) : null;
+      let voted = false;
+
+      const result: CaptchaResult = {
+        solved,
+        proofMessageId,
+        cancelReason: null,
+        childEventId,
+        acceptWork: async () => {
+          if (voted || !correctionId) return;
+          voted = true;
+          try {
+            await fetch(`${this._client._apiUrl}/api/kal/event/${childEventId}/vote`, {
+              method: 'POST',
+              headers: this._apiHeaders(),
+              body: JSON.stringify({ ids: [correctionId], vote: true }),
+            });
+          } catch { /* best effort */ }
+        },
+        rejectWork: async (reason?: string) => {
+          if (voted || !correctionId) return;
+          voted = true;
+          const body: Record<string, unknown> = { ids: [correctionId], vote: false };
+          if (reason) body.reason = reason;
+          try {
+            await fetch(`${this._client._apiUrl}/api/kal/event/${childEventId}/vote`, {
+              method: 'POST',
+              headers: this._apiHeaders(),
+              body: JSON.stringify(body),
+            });
+          } catch { /* best effort */ }
+        },
+      };
+
+      if (autoAccept && solved && correctionId) {
+        await new Promise<void>(r => setTimeout(r, 2000));
+        await result.acceptWork();
+      }
+
+      return result;
+    };
+
+    let accepted = false;
+
+    try {
+      // Phase 1: wait for acceptance
+      const acceptDeadline = Date.now() + acceptanceTimeout * 1000;
+      while (true) {
+        const remaining = acceptDeadline - Date.now();
+        if (remaining <= 0) throw new Error('timeout');
+        const action = await nextAction(remaining);
+        const kind = String(action.kind ?? '');
+        const data = (action.data ?? {}) as Record<string, unknown>;
+
+        if (kind === 'human_action_accepted') {
+          accepted = true;
+          break;
+        }
+        if (kind === 'human_action_completed') {
+          cleanup();
+          return await makeResult(data, true);
+        }
+        if (kind === 'human_action_failed' || kind === 'human_action_declined' || kind === 'human_action_withdrew') {
+          cleanup();
+          return {
+            solved: false,
+            proofMessageId: null,
+            cancelReason: kind.replace('human_action_', ''),
+            childEventId,
+            acceptWork: async () => {},
+            rejectWork: async () => {},
+          };
+        }
+      }
+
+      // Phase 2: wait for completion
+      while (true) {
+        const remaining = completionDeadline - Date.now();
+        if (remaining <= 0) throw new Error('timeout');
+        const action = await nextAction(remaining);
+        const kind = String(action.kind ?? '');
+        const data = (action.data ?? {}) as Record<string, unknown>;
+
+        if (kind === 'human_action_completed') {
+          cleanup();
+          return await makeResult(data, true);
+        }
+        if (kind === 'human_action_failed' || kind === 'human_action_withdrew') {
+          cleanup();
+          return {
+            solved: false,
+            proofMessageId: null,
+            cancelReason: kind.replace('human_action_', ''),
+            childEventId,
+            acceptWork: async () => {},
+            rejectWork: async () => {},
+          };
+        }
+      }
+    } catch {
+      cleanup();
+      const phase = accepted ? 'completion' : 'acceptance';
+      await this._expireCaptchaEvent(childEventId);
+      throw new CaptchaTimeoutError(phase);
+    }
+  }
+
+  private async _createCaptchaEvent(acceptanceTimeout: number, completionTimeout: number): Promise<number> {
+    const now = new Date();
+    const body = {
+      parent_id: this._eventId ? Number(this._eventId) : null,
+      kal_schedule_id: this.scheduleId,
+      billable_type: 'App\\Models\\Agent',
+      benefitable_type: 'App\\Models\\User',
+      benefitable_id: this.providerUserId,
+      amount: 0.10,
+      status_id: 100,
+      data: {
+        action_type: 'captcha',
+        acceptance_deadline_at: new Date(now.getTime() + acceptanceTimeout * 1000).toISOString(),
+        completion_deadline_at: new Date(now.getTime() + completionTimeout * 1000).toISOString(),
+      },
+    };
+
+    const resp = await fetch(`${this._client._apiUrl}/api/kal/event/store`, {
+      method: 'POST',
+      headers: this._apiHeaders(),
+      body: JSON.stringify(body),
+    });
+    if (!resp.ok) {
+      throw new Error(`Event creation failed: ${resp.status}`);
+    }
+    const result = await resp.json() as Record<string, unknown>;
+    const id = result.id ?? (result.data as Record<string, unknown>)?.id;
+    if (!id) throw new Error('Event creation did not return an id');
+    return Number(id);
+  }
+
+  private async _expireCaptchaEvent(childEventId: number): Promise<void> {
+    try {
+      await fetch(`${this._client._apiUrl}/api/kal/event/${childEventId}`, {
+        method: 'PATCH',
+        headers: this._apiHeaders(),
+        body: JSON.stringify({ status_id: 777 }),
+      });
+    } catch { /* best effort */ }
   }
 
   // --- Internal handlers called by Client dispatch ---
