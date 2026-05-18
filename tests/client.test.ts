@@ -164,6 +164,26 @@ describe('resume()', () => {
     expect(browser.scheduleId).toBe(10);
   });
 
+  it('resume_ok propagates event_id to Browser', async () => {
+    const client = await createClient();
+    const ws = MockWebSocket.last();
+
+    const resumePromise = client.resume('sess-ev');
+
+    ws.receive({
+      type: 'resume_ok',
+      session_id: 'sess-ev',
+      event_id: 'evt-777',
+      schedule_id: 10,
+      chat_topic_id: null,
+      browser_info: {},
+    });
+
+    const browser = await resumePromise;
+    expect(browser.sessionId).toBe('sess-ev');
+    expect((browser as any)._eventId).toBe('evt-777');
+  });
+
   it('rejects with SessionExpired on expired reason', async () => {
     const client = await createClient();
     const ws = MockWebSocket.last();

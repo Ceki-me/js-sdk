@@ -586,6 +586,7 @@ export class Client {
 
     const match: Match = {
       session_id: sessionId,
+      event_id: msg.event_id != null ? String(msg.event_id) : null,
       schedule_id: Number(msg.schedule_id ?? 0),
       chat_topic_id: msg.chat_topic_id ? String(msg.chat_topic_id) : null,
       provider_user_id: msg.provider_user_id != null ? Number(msg.provider_user_id) : null,
