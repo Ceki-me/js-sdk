@@ -124,6 +124,45 @@ async function cmdSearch(args: string[]): Promise<void> {
   }
 }
 
+async function cmdSessions(args: string[]): Promise<void> {
+  let showAll = false;
+  let limit = 50;
+  let jsonOutput = false;
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--all') showAll = true;
+    else if (args[i] === '--json') jsonOutput = true;
+    else if (args[i] === '--limit' && args[i + 1]) limit = Number(args[++i]);
+  }
+  const apiKey = getApiKey();
+  const client = await connect(apiKey, connectOptions());
+  try {
+    const results = await client.listSessions({ active: !showAll, limit });
+    if (jsonOutput) {
+      out(results);
+    } else {
+      if (!results.length) {
+        process.stdout.write('No sessions found.\n');
+        return;
+      }
+      const header = 'SID'.padEnd(8) + 'SCHEDULE'.padEnd(10) + 'STARTED'.padEnd(22) + 'DURATION'.padEnd(10) + 'EARNED'.padEnd(9) + 'STATUS'.padEnd(10) + 'RENTER'.padEnd(16) + 'PROVIDER';
+      process.stdout.write(header + '\n');
+      for (const s of results) {
+        const started = s.started_at ?? '—';
+        const mins = Math.floor(s.duration / 60);
+        const secs = s.duration % 60;
+        const dur = `${mins}:${String(secs).padStart(2, '0')}`;
+        const earned = `$${s.earned.toFixed(2)}`;
+        const renter = (s.renter as Record<string, string>)?.name ?? '—';
+        const provider = (s.provider as Record<string, string>)?.name ?? '—';
+        const line = String(s.id).padEnd(8) + String(s.schedule_id).padEnd(10) + started.padEnd(22) + dur.padEnd(10) + earned.padEnd(9) + s.status.padEnd(10) + renter.padEnd(16) + provider;
+        process.stdout.write(line + '\n');
+      }
+    }
+  } finally {
+    await closeClient(client);
+  }
+}
+
 async function cmdMyBrowsers(): Promise<void> {
   const apiKey = getApiKey();
   const client = await connect(apiKey, connectOptions());
@@ -621,6 +660,9 @@ async function main(): Promise<void> {
       break;
     case 'search':
       await cmdSearch(rest);
+      break;
+    case 'sessions':
+      await cmdSessions(rest);
       break;
     case 'my-browsers':
       await cmdMyBrowsers();

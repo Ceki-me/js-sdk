@@ -38,13 +38,13 @@ describe('CLI', () => {
   it('--version exits 0, prints version', async () => {
     const r = await run(['--version']);
     expect(r.code).toBe(0);
-    expect(r.stdout.trim()).toBe('1.8.0');
+    expect(r.stdout.trim()).toBe('1.9.0');
   });
 
   it('-v also prints version', async () => {
     const r = await run(['-v']);
     expect(r.code).toBe(0);
-    expect(r.stdout.trim()).toBe('1.8.0');
+    expect(r.stdout.trim()).toBe('1.9.0');
   });
 
   it('missing CEKI_API_KEY exits 2 with error JSON on stderr', async () => {

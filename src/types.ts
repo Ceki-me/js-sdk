@@ -101,6 +101,20 @@ export interface ChatHistoryOptions {
   since?: string;
 }
 
+export interface SessionInfo {
+  id: number;
+  schedule_id: number;
+  started_at: string | null;
+  ended_at: string | null;
+  status: string;
+  duration: number;
+  earned: number;
+  price_per_min: number;
+  renter: Record<string, unknown>;
+  provider: Record<string, unknown>;
+  data: Record<string, unknown>;
+}
+
 export interface CaptchaOptions {
   acceptanceTimeout?: number;
   completionTimeout?: number;

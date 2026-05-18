@@ -18,7 +18,7 @@ import {
 import { Browser } from './browser.js';
 import { Humanizer } from './humanize/humanizer.js';
 import { HumanProfile } from './humanize/profile.js';
-import type { ConnectOptions, BrowserOption, Match, RentOptions } from './types.js';
+import type { ConnectOptions, BrowserOption, Match, RentOptions, SessionInfo } from './types.js';
 
 const BACKOFF_SCHEDULE = [1, 2, 4, 8, 16, 32, 60];
 const MAX_RECONNECT_ATTEMPTS = 10;
@@ -119,6 +119,30 @@ export class Client {
     const body = await resp.json();
     const data = (body as Record<string, unknown>).data ?? body;
     return (Array.isArray(data) ? data : []) as BrowserOption[];
+  }
+
+  async listSessions(opts?: { active?: boolean; limit?: number }): Promise<SessionInfo[]> {
+    const active = opts?.active ?? true;
+    const limit = opts?.limit ?? 50;
+    const params = new URLSearchParams({
+      active: active ? '1' : '0',
+      limit: String(limit),
+    });
+    const url = `${this._apiUrl}/api/agent/sessions?${params.toString()}`;
+    const headers: Record<string, string> = {
+      'Authorization': `Bearer ${this._apiKey}`,
+    };
+    if (this._basicAuth) {
+      const encoded = Buffer.from(`${this._basicAuth[0]}:${this._basicAuth[1]}`).toString('base64');
+      headers['X-Basic-Auth'] = `Basic ${encoded}`;
+    }
+    const resp = await fetch(url, { headers });
+    if (!resp.ok) {
+      throw new TransportError(`listSessions request failed: ${resp.status} ${resp.statusText}`);
+    }
+    const body = await resp.json();
+    const items = (body as Record<string, unknown>).data ?? body;
+    return (Array.isArray(items) ? items : []) as SessionInfo[];
   }
 
   async myBrowsers(): Promise<BrowserOption[]> {

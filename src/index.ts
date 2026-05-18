@@ -38,4 +38,5 @@ export type {
   ChatHistoryOptions,
   CaptchaOptions,
   CaptchaResult,
+  SessionInfo,
 } from './types.js';
