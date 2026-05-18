@@ -582,7 +582,6 @@ export class Browser {
   }
 
   private async _createCaptchaEvent(acceptanceTimeout: number, completionTimeout: number): Promise<number> {
-    const now = new Date();
     const body = {
       parent_id: this._eventId ? Number(this._eventId) : null,
       kal_schedule_id: this.scheduleId,
@@ -593,8 +592,8 @@ export class Browser {
       status_id: 100,
       data: {
         action_type: 'captcha',
-        acceptance_deadline_at: new Date(now.getTime() + acceptanceTimeout * 1000).toISOString(),
-        completion_deadline_at: new Date(now.getTime() + completionTimeout * 1000).toISOString(),
+        acceptance_deadline_at: Math.floor(acceptanceTimeout),
+        completion_deadline_at: Math.floor(completionTimeout),
       },
     };
 
