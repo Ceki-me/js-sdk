@@ -112,6 +112,7 @@ export interface CaptchaResult {
   proofMessageId: string | null;
   cancelReason: string | null;
   childEventId: number;
+  correctionId: number | null;
   acceptWork: () => Promise<void>;
   rejectWork: (reason?: string) => Promise<void>;
 }

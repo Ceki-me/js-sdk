@@ -490,9 +490,11 @@ async function cmdCdp(sid: string, args: string[]): Promise<void> {
 async function cmdRequestCaptcha(sid: string, args: string[]): Promise<void> {
   let acceptance = 60;
   let completion = 120;
+  let manual = false;
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--acceptance' && args[i + 1]) acceptance = parseFloat(args[++i]);
     if (args[i] === '--completion' && args[i + 1]) completion = parseFloat(args[++i]);
+    if (args[i] === '--manual') manual = true;
   }
   const apiKey = getApiKey();
   const [client, browser] = await resumeBrowser(apiKey, sid);
@@ -500,18 +502,19 @@ async function cmdRequestCaptcha(sid: string, args: string[]): Promise<void> {
     const result = await browser.requestCaptcha({
       acceptanceTimeout: acceptance,
       completionTimeout: completion,
-      autoAccept: true,
+      autoAccept: !manual,
     });
     out({
       solved: result.solved,
       proof_message_id: result.proofMessageId,
       cancel_reason: result.cancelReason,
       child_event_id: result.childEventId,
+      correction_id: result.correctionId,
     });
     if (!result.solved) process.exit(1);
   } catch (e) {
     if (e instanceof CaptchaTimeoutError) {
-      out({ solved: false, cancel_reason: `timeout:${e.phase}`, child_event_id: null });
+      out({ solved: false, cancel_reason: `timeout:${e.phase}`, child_event_id: null, correction_id: null });
       process.exit(1);
     }
     throw e;
@@ -568,7 +571,7 @@ Commands:
   configure <sid> [--masking-mode true|false] [--fingerprint true|false]
   cdp <sid> --method <M> [--params JSON]
   upload <sid> --selector CSS --file PATH [--filename NAME]
-  request-captcha <sid> [--acceptance N] [--completion M]
+  request-captcha <sid> [--acceptance N] [--completion M] [--manual]
   wait <sid>
   chat <sid> send "<text>"
   chat <sid> send-image --image PATH [--text "..."]

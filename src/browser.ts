@@ -1,4 +1,4 @@
-import { TimeoutError, SessionEnded, CaptchaTimeoutError } from './errors.js';
+import { TimeoutError, SessionEnded, CaptchaError, CaptchaTimeoutError } from './errors.js';
 import { BrowserChat } from './chat.js';
 import { BrowserProfile } from './profile.js';
 import { saveSession, getLastSeenTs, updateLastSeenTs } from './state.js';
@@ -481,29 +481,28 @@ export class Browser {
         proofMessageId,
         cancelReason: null,
         childEventId,
+        correctionId,
         acceptWork: async () => {
-          if (voted || !correctionId) return;
+          if (voted) return;
+          if (!correctionId) throw new CaptchaError('no correction_id — provider has not proposed completion');
           voted = true;
-          try {
-            await fetch(`${this._client._apiUrl}/api/kal/event/${childEventId}/vote`, {
-              method: 'POST',
-              headers: this._apiHeaders(),
-              body: JSON.stringify({ ids: [correctionId], vote: true }),
-            });
-          } catch { /* best effort */ }
+          await fetch(`${this._client._apiUrl}/api/agent/kal/event/${childEventId}/vote`, {
+            method: 'POST',
+            headers: this._apiHeaders(),
+            body: JSON.stringify({ ids: [correctionId], vote: true }),
+          });
         },
         rejectWork: async (reason?: string) => {
-          if (voted || !correctionId) return;
+          if (voted) return;
+          if (!correctionId) throw new CaptchaError('no correction_id — provider has not proposed completion');
           voted = true;
           const body: Record<string, unknown> = { ids: [correctionId], vote: false };
           if (reason) body.reason = reason;
-          try {
-            await fetch(`${this._client._apiUrl}/api/kal/event/${childEventId}/vote`, {
-              method: 'POST',
-              headers: this._apiHeaders(),
-              body: JSON.stringify(body),
-            });
-          } catch { /* best effort */ }
+          await fetch(`${this._client._apiUrl}/api/agent/kal/event/${childEventId}/vote`, {
+            method: 'POST',
+            headers: this._apiHeaders(),
+            body: JSON.stringify(body),
+          });
         },
       };
 
@@ -542,6 +541,7 @@ export class Browser {
             proofMessageId: null,
             cancelReason: kind.replace('human_action_', ''),
             childEventId,
+            correctionId: null,
             acceptWork: async () => {},
             rejectWork: async () => {},
           };
@@ -567,6 +567,7 @@ export class Browser {
             proofMessageId: null,
             cancelReason: kind.replace('human_action_', ''),
             childEventId,
+            correctionId: null,
             acceptWork: async () => {},
             rejectWork: async () => {},
           };
@@ -597,7 +598,7 @@ export class Browser {
       },
     };
 
-    const resp = await fetch(`${this._client._apiUrl}/api/kal/event/store`, {
+    const resp = await fetch(`${this._client._apiUrl}/api/agent/kal/event/store`, {
       method: 'POST',
       headers: this._apiHeaders(),
       body: JSON.stringify(body),
@@ -613,7 +614,7 @@ export class Browser {
 
   private async _expireCaptchaEvent(childEventId: number): Promise<void> {
     try {
-      await fetch(`${this._client._apiUrl}/api/kal/event/${childEventId}`, {
+      await fetch(`${this._client._apiUrl}/api/agent/kal/event/${childEventId}`, {
         method: 'PATCH',
         headers: this._apiHeaders(),
         body: JSON.stringify({ status_id: 777 }),

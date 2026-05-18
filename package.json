@@ -1,6 +1,6 @@
 {
   "name": "ceki-browser",
-  "version": "1.7.0",
+  "version": "1.8.0",
   "description": "TypeScript SDK for browser.ceki.me — rent real browsers of real people",
   "license": "MIT",
   "type": "module",
