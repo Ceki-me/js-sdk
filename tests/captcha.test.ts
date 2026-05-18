@@ -33,7 +33,7 @@ beforeEach(async () => {
     return {
       ok: true,
       status: 200,
-      json: async () => ({ id: 9001, status_id: 100 }),
+      json: async () => ({ id: 9001, status_id: 100, amount: 0.10 }),
     };
   });
 
@@ -184,7 +184,7 @@ describe('requestCaptcha', () => {
     expect(result.correctionId).toBeNull();
   });
 
-  it('event store uses agent route', async () => {
+  it('captcha-request uses new endpoint with minimal payload', async () => {
     const captchaP = browser.requestCaptcha({
       acceptanceTimeout: 30,
       completionTimeout: 30,
@@ -192,9 +192,13 @@ describe('requestCaptcha', () => {
     });
     await vi.advanceTimersByTimeAsync(100);
 
-    const storeCalls = fetchCalls.filter(c => c.url.includes('/event/store'));
-    expect(storeCalls).toHaveLength(1);
-    expect(storeCalls[0].url).toContain('/api/agent/kal/event/store');
+    const reqCalls = fetchCalls.filter(c => c.url.includes('/captcha-request'));
+    expect(reqCalls).toHaveLength(1);
+    expect(reqCalls[0].url).toContain('/api/agent/sessions/evt-500/captcha-request');
+    const body = JSON.parse(reqCalls[0].init.body as string);
+    expect(body).toEqual({ acceptance_deadline_at: 30, completion_deadline_at: 30 });
+    expect(body).not.toHaveProperty('parent_id');
+    expect(body).not.toHaveProperty('amount');
 
     sendAction('human_action_completed', { proof_message_id: 'p', correction_id: 1 });
     await vi.advanceTimersByTimeAsync(100);

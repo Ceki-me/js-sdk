@@ -433,7 +433,7 @@ export class Browser {
     acceptanceTimeout = Math.min(acceptanceTimeout, 300);
     completionTimeout = Math.min(completionTimeout, 600);
 
-    const childEventId = await this._createCaptchaEvent(acceptanceTimeout, completionTimeout);
+    const { id: childEventId } = await this._createCaptchaEvent(acceptanceTimeout, completionTimeout);
     const completionDeadline = Date.now() + completionTimeout * 1000;
 
     const buffer: Record<string, unknown>[] = [];
@@ -581,34 +581,23 @@ export class Browser {
     }
   }
 
-  private async _createCaptchaEvent(acceptanceTimeout: number, completionTimeout: number): Promise<number> {
+  private async _createCaptchaEvent(acceptanceTimeout: number, completionTimeout: number): Promise<{ id: number; amount: number }> {
     const body = {
-      parent_id: this._eventId ? Number(this._eventId) : null,
-      kal_schedule_id: this.scheduleId,
-      billable_type: 'App\\Models\\Agent',
-      benefitable_type: 'App\\Models\\User',
-      benefitable_id: this.providerUserId,
-      amount: 0.10,
-      status_id: 100,
-      data: {
-        action_type: 'captcha',
-        acceptance_deadline_at: Math.floor(acceptanceTimeout),
-        completion_deadline_at: Math.floor(completionTimeout),
-      },
+      acceptance_deadline_at: Math.floor(acceptanceTimeout),
+      completion_deadline_at: Math.floor(completionTimeout),
     };
 
-    const resp = await fetch(`${this._client._apiUrl}/api/agent/kal/event/store`, {
+    const resp = await fetch(`${this._client._apiUrl}/api/agent/sessions/${this._eventId}/captcha-request`, {
       method: 'POST',
       headers: this._apiHeaders(),
       body: JSON.stringify(body),
     });
     if (!resp.ok) {
-      throw new Error(`Event creation failed: ${resp.status}`);
+      throw new Error(`Captcha request failed: ${resp.status}`);
     }
-    const result = await resp.json() as Record<string, unknown>;
-    const id = result.id ?? (result.data as Record<string, unknown>)?.id;
-    if (!id) throw new Error('Event creation did not return an id');
-    return Number(id);
+    const result = await resp.json() as { id: number; amount: number };
+    if (!result.id) throw new Error('Captcha request did not return an id');
+    return { id: result.id, amount: result.amount };
   }
 
   private async _expireCaptchaEvent(childEventId: number): Promise<void> {
