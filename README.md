@@ -1,23 +1,23 @@
-# ceki-browser
+# @ceki/sdk
 
-TypeScript/Node.js SDK for [ceki.me](https://ceki.me) — rent real browsers from real people for AI agent automation.
+TypeScript/Node.js SDK for [browser.ceki.me](https://browser.ceki.me) — rent real browsers from real people for AI agent automation.
 
 ## Install
 
 ```bash
-npm install ceki-browser
+npm install @ceki/sdk
 ```
 
 For the CLI (global):
 
 ```bash
-npm install -g ceki-browser
+npm install -g @ceki/sdk
 ```
 
 ## Quickstart
 
 ```typescript
-import { connect } from 'ceki-browser';
+import { connect } from '@ceki/sdk';
 
 const client = await connect(process.env.CEKI_API_KEY!);
 const options = await client.search({ geo: 'US', language: 'en' });
@@ -157,18 +157,12 @@ const browser = await client.rent(scheduleId, { human: null });
 
 ## CLI
 
-Both SDKs install a single `ceki-browser` binary on your PATH. Same command set whether you came from Python or Node.js.
+The SDK installs a `ceki` CLI binary on your PATH.
 
 ### Install
 
-Python:
 ```bash
-pip install ceki-browser
-```
-
-Node.js:
-```bash
-npm install -g ceki-browser
+npm install -g @ceki/sdk
 ```
 
 ### Environment variables
@@ -186,11 +180,11 @@ npm install -g ceki-browser
 ```bash
 export CEKI_API_KEY=ag_...
 
-SCHEDULE=$(ceki-browser search --limit 1 | jq -r '.[0].schedule_id')
-SID=$(ceki-browser rent --schedule $SCHEDULE | jq -r .session_id)
-ceki-browser navigate $SID https://example.com
-ceki-browser snapshot $SID -o snap.png
-ceki-browser stop $SID
+SCHEDULE=$(ceki search --limit 1 | jq -r '.[0].schedule_id')
+SID=$(ceki rent --schedule $SCHEDULE | jq -r .session_id)
+ceki navigate $SID https://example.com
+ceki snapshot $SID -o snap.png
+ceki stop $SID
 ```
 
 The CLI persists session state locally — after `rent` it saves the session ID so subsequent commands resume it by SID without re-renting.
