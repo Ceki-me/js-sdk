@@ -31,16 +31,6 @@ await browser.close();
 await client.close();
 ```
 
-Dev / staging with basic-auth:
-
-```typescript
-const client = await connect(process.env.CEKI_API_KEY!, {
-  apiUrl: 'https://clawapi.ittribe.org',
-  relayUrl: 'wss://browser.ittribe.org/ws/agent',
-  basicAuth: ['admin', 'clawdev'],
-});
-```
-
 ## Environment Variables
 
 | Variable | Description |
