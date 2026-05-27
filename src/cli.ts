@@ -592,9 +592,9 @@ async function cmdUpload(sid: string, args: string[]): Promise<void> {
 // --- Help ---
 
 function printHelp(): void {
-  console.log(`ceki-browser — CLI for browser.ceki.me rental
+  console.log(`ceki — CLI for browser.ceki.me rental
 
-Usage: ceki-browser <command> [options]
+Usage: ceki <command> [options]
 
 Commands:
   rent --schedule N [--fingerprint-from PATH]
@@ -708,14 +708,14 @@ async function main(): Promise<void> {
       break;
     case 'chat':
       if (rest.length < 2) {
-        err('Usage: ceki-browser chat <sid> <action> [args]', 'args');
+        err('Usage: ceki chat <sid> <action> [args]', 'args');
         process.exit(1);
       }
       await cmdChat(rest[0], rest[1], rest.slice(2));
       break;
     case 'profile':
       if (rest.length < 2) {
-        err('Usage: ceki-browser profile export|import <sid> [args]', 'args');
+        err('Usage: ceki profile export|import <sid> [args]', 'args');
         process.exit(1);
       }
       await cmdProfile(rest[1], rest[0], rest.slice(2));
