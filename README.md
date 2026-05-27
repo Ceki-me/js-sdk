@@ -36,10 +36,6 @@ await client.close();
 | Variable | Description |
 |---|---|
 | `CEKI_API_KEY` | Your API key (required) |
-| `CEKI_API_URL` | Override REST API base URL |
-| `CEKI_RELAY_URL` | Override relay WebSocket URL |
-| `CEKI_CHAT_URL` | Override chat API base URL |
-| `CEKI_BASIC_AUTH_USER` / `CEKI_BASIC_AUTH_PASS` | nginx htpasswd credentials |
 
 ## API
 
@@ -51,10 +47,6 @@ Establish a WebSocket connection to the relay. Returns a `Client` instance.
 
 | Field | Default | Description |
 |---|---|---|
-| `apiUrl` | `https://api.ceki.me` | REST API base URL |
-| `relayUrl` | `wss://browser.ceki.me/ws/agent` | Relay WebSocket URL |
-| `chatUrl` | `https://chat.ceki.me/api/chat` | Chat API URL |
-| `basicAuth` | `undefined` | `[user, password]` for nginx htpasswd |
 | `reconnect` | `true` | Auto-reconnect on disconnect |
 
 ### `client.search(filters?, limit?) -> BrowserOption[]`
@@ -170,10 +162,6 @@ npm install -g @ceki/sdk
 | Variable | Required | Purpose |
 |---|---|---|
 | `CEKI_API_KEY` | yes | Agent token (`ag_...`) |
-| `CEKI_API_URL` | no | Override API base URL (default: `https://api.ceki.me`) |
-| `CEKI_RELAY_URL` | no | Override relay WS URL (default: `wss://browser.ceki.me/ws/agent`) |
-| `CEKI_CHAT_URL` | no | Override chat-service URL |
-| `CEKI_BASIC_AUTH_USER` / `_PASS` | no | HTTP Basic Auth for protected dev/stage endpoints |
 
 ### Quick start
 
