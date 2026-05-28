@@ -1,3 +1,4 @@
+import mime from 'mime-types';
 import { TimeoutError, SessionEnded, CaptchaError, CaptchaTimeoutError } from './errors.js';
 import { BrowserChat } from './chat.js';
 import { BrowserProfile } from './profile.js';
@@ -293,32 +294,8 @@ export class Browser {
     };
   }
 
-  private static readonly _MIME_MAP: Record<string, string> = {
-    '.png': 'image/png',
-    '.jpg': 'image/jpeg',
-    '.jpeg': 'image/jpeg',
-    '.gif': 'image/gif',
-    '.webp': 'image/webp',
-    '.avif': 'image/avif',
-    '.svg': 'image/svg+xml',
-    '.pdf': 'application/pdf',
-    '.mp4': 'video/mp4',
-    '.webm': 'video/webm',
-    '.json': 'application/json',
-    '.txt': 'text/plain',
-    '.csv': 'text/csv',
-    '.html': 'text/html',
-    '.xml': 'application/xml',
-    '.zip': 'application/zip',
-  };
-
   private static _detectMime(filename: string): string {
-    const dot = filename.lastIndexOf('.');
-    if (dot >= 0) {
-      const ext = filename.slice(dot).toLowerCase();
-      if (ext in Browser._MIME_MAP) return Browser._MIME_MAP[ext];
-    }
-    return 'application/octet-stream';
+    return mime.lookup(filename) || 'application/octet-stream';
   }
 
   async upload(
