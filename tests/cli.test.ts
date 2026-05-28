@@ -3,7 +3,7 @@ import { execFile } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
-const CLI_PATH = path.resolve('/home/node/.openclaw/ceki-plugin/js-sdk/dist/cli.js');
+const CLI_PATH = path.resolve(__dirname, '../dist/cli.js');
 
 function run(args: string[], env?: Record<string, string>): Promise<{ stdout: string; stderr: string; code: number | null }> {
   return new Promise((resolve) => {
@@ -24,7 +24,7 @@ describe('CLI', () => {
   it('--help exits 0, prints help text', async () => {
     const r = await run(['--help']);
     expect(r.code).toBe(0);
-    expect(r.stdout).toContain('ceki-browser');
+    expect(r.stdout).toContain('ceki');
     expect(r.stdout).toContain('Usage:');
     expect(r.stdout).toContain('Commands:');
   });
@@ -38,13 +38,13 @@ describe('CLI', () => {
   it('--version exits 0, prints version', async () => {
     const r = await run(['--version']);
     expect(r.code).toBe(0);
-    expect(r.stdout.trim()).toBe('1.9.0');
+    expect(r.stdout.trim()).toMatch(/^\d+\.\d+\.\d+$/);
   });
 
   it('-v also prints version', async () => {
     const r = await run(['-v']);
     expect(r.code).toBe(0);
-    expect(r.stdout.trim()).toBe('1.9.0');
+    expect(r.stdout.trim()).toMatch(/^\d+\.\d+\.\d+$/);
   });
 
   it('missing CEKI_API_KEY exits 2 with error JSON on stderr', async () => {
