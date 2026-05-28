@@ -293,10 +293,39 @@ export class Browser {
     };
   }
 
+  private static readonly _MIME_MAP: Record<string, string> = {
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.gif': 'image/gif',
+    '.webp': 'image/webp',
+    '.avif': 'image/avif',
+    '.svg': 'image/svg+xml',
+    '.pdf': 'application/pdf',
+    '.mp4': 'video/mp4',
+    '.webm': 'video/webm',
+    '.json': 'application/json',
+    '.txt': 'text/plain',
+    '.csv': 'text/csv',
+    '.html': 'text/html',
+    '.xml': 'application/xml',
+    '.zip': 'application/zip',
+  };
+
+  private static _detectMime(filename: string): string {
+    const dot = filename.lastIndexOf('.');
+    if (dot >= 0) {
+      const ext = filename.slice(dot).toLowerCase();
+      if (ext in Browser._MIME_MAP) return Browser._MIME_MAP[ext];
+    }
+    return 'application/octet-stream';
+  }
+
   async upload(
     selector: string,
     source: string | Buffer,
     filename?: string,
+    mime?: string,
   ): Promise<{ ok: boolean; filename: string; size: number }> {
     let buf: Buffer;
     let resolvedFilename: string;
@@ -311,10 +340,12 @@ export class Browser {
       resolvedFilename = filename ?? 'file';
     }
 
+    const mimeType = mime ?? Browser._detectMime(resolvedFilename);
+    console.info(`upload: file=${resolvedFilename} mime=${mimeType} size=${buf.length}`);
+
     const b64 = buf.toString('base64');
     const size = buf.length;
 
-    // Inject file via Runtime.evaluate + DataTransfer + File API
     const expression = `
       (function() {
         var input = document.querySelector(${JSON.stringify(selector)});
@@ -323,7 +354,7 @@ export class Browser {
         var binary = atob(b64);
         var bytes = new Uint8Array(binary.length);
         for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-        var file = new File([bytes], ${JSON.stringify(resolvedFilename)}, {type: 'application/octet-stream'});
+        var file = new File([bytes], ${JSON.stringify(resolvedFilename)}, {type: ${JSON.stringify(mimeType)}});
         var dt = new DataTransfer();
         dt.items.add(file);
         input.files = dt.files;
@@ -338,6 +369,20 @@ export class Browser {
     }) as Record<string, unknown>;
 
     const resultObj = result?.result as Record<string, unknown> | undefined;
+
+    try {
+      await this.send({
+        method: 'Input.dispatchKeyEvent',
+        params: { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27, nativeVirtualKeyCode: 27 },
+      });
+      await this.send({
+        method: 'Input.dispatchKeyEvent',
+        params: { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27, nativeVirtualKeyCode: 27 },
+      });
+    } catch {
+      // ignore — best-effort dialog dismiss
+    }
+
     if (resultObj?.value) {
       return JSON.parse(String(resultObj.value)) as { ok: boolean; filename: string; size: number };
     }

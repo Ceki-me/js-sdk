@@ -566,10 +566,12 @@ async function cmdUpload(sid: string, args: string[]): Promise<void> {
   let selector: string | null = null;
   let filePath: string | null = null;
   let filename: string | undefined;
+  let mime: string | undefined;
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--selector' && args[i + 1]) selector = args[++i];
     if (args[i] === '--file' && args[i + 1]) filePath = args[++i];
     if (args[i] === '--filename' && args[i + 1]) filename = args[++i];
+    if (args[i] === '--mime' && args[i + 1]) mime = args[++i];
   }
   if (!selector || !filePath) {
     err('--selector and --file are required', 'args');
@@ -582,7 +584,7 @@ async function cmdUpload(sid: string, args: string[]): Promise<void> {
   const apiKey = getApiKey();
   const [client, browser] = await resumeBrowser(apiKey, sid);
   try {
-    const result = await browser.upload(selector, filePath, filename);
+    const result = await browser.upload(selector, filePath, filename, mime);
     out(result);
   } finally {
     await closeClient(client);
@@ -609,7 +611,7 @@ Commands:
   switch-tab <sid>
   configure <sid> [--masking-mode true|false] [--fingerprint true|false]
   cdp <sid> --method <M> [--params JSON]
-  upload <sid> --selector CSS --file PATH [--filename NAME]
+  upload <sid> --selector CSS --file PATH [--filename NAME] [--mime TYPE]
   request-captcha <sid> [--acceptance N] [--completion M] [--manual]
   wait <sid>
   chat <sid> send "<text>"
