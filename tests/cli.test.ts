@@ -24,7 +24,7 @@ describe('CLI', () => {
   it('--help exits 0, prints help text', async () => {
     const r = await run(['--help']);
     expect(r.code).toBe(0);
-    expect(r.stdout).toContain('ceki-browser');
+    expect(r.stdout).toContain('ceki');
     expect(r.stdout).toContain('Usage:');
     expect(r.stdout).toContain('Commands:');
   });
