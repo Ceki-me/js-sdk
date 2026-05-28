@@ -3,7 +3,7 @@ import { execFile } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
-const CLI_PATH = path.resolve('/home/node/.openclaw/ceki-plugin/js-sdk/dist/cli.js');
+const CLI_PATH = path.resolve(__dirname, '../dist/cli.js');
 
 function run(args: string[], env?: Record<string, string>): Promise<{ stdout: string; stderr: string; code: number | null }> {
   return new Promise((resolve) => {
