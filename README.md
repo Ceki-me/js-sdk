@@ -21,7 +21,7 @@ import { connect } from '@ceki/sdk';
 
 const client = await connect(process.env.CEKI_API_KEY!);
 const options = await client.search({ geo: 'US', language: 'en' });
-const browser = await client.rent(options[0].browser_id);
+const browser = await client.rent(options[0].schedule_id);
 
 await browser.navigate('https://example.com');
 const snap = await browser.snapshot();
@@ -53,9 +53,9 @@ Establish a WebSocket connection to the relay. Returns a `Client` instance.
 
 Search for available browsers. Filters: `geo`, `language`, etc.
 
-### `client.rent(browserId, opts?) -> Browser`
+### `client.rent(scheduleId, opts?) -> Browser`
 
-Rent a browser by browser ID. Waits up to 60s for a match. Options:
+Rent a browser by schedule ID. Waits up to 60s for a match. Options:
 - `human` — `'natural'` (default), `'careful'`, or `null` (no humanization)
 - `maskingMode` — enable masking
 - `fingerprint` — `true`, `false`, or fingerprint object
@@ -115,13 +115,13 @@ Browser actions include human-like timing by default — delays before/after act
 
 ```typescript
 // Default: natural profile (enabled by default)
-const browser = await client.rent(browserId);
+const browser = await client.rent(scheduleId);
 
 // Explicit profile
-const browser = await client.rent(browserId, { human: 'careful' });
+const browser = await client.rent(scheduleId, { human: 'careful' });
 
 // Disable humanization
-const browser = await client.rent(browserId, { human: null });
+const browser = await client.rent(scheduleId, { human: null });
 ```
 
 ### Environment overrides
@@ -168,8 +168,8 @@ npm install -g @ceki/sdk
 ```bash
 export CEKI_API_KEY=ag_...
 
-BROWSER=$(ceki search --limit 1 | jq -r '.[0].browser_id')
-SID=$(ceki rent --browser $BROWSER | jq -r .session_id)
+SCHEDULE=$(ceki search --limit 1 | jq -r '.[0].schedule_id')
+SID=$(ceki rent --schedule $SCHEDULE | jq -r .session_id)
 ceki navigate $SID https://example.com
 ceki snapshot $SID -o snap.png
 ceki stop $SID
@@ -185,7 +185,7 @@ The CLI persists session state locally — after `rent` it saves the session ID 
 |---|---|
 | `search [--limit N] [--filter K=V]…` | List available browsers |
 | `my-browsers` | List browsers with pre-arranged rent contracts |
-| `rent --browser ID [--mode incognito\|main] [--fingerprint-from FILE]` | Rent a browser |
+| `rent --schedule ID [--mode incognito\|main] [--fingerprint-from FILE]` | Rent a browser |
 | `sessions [--all] [--limit N] [--json]` | List your sessions |
 | `stop SID` | End a session |
 | `wait SID` | Block until the session ends |

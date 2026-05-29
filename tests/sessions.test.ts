@@ -18,7 +18,7 @@ import { Client } from '../src/client.js';
 const MOCK_SESSIONS = [
   {
     id: 2650,
-    browser_id: 703,
+    schedule_id: 703,
     started_at: '2026-05-18T10:43:09Z',
     ended_at: null,
     status: 'active',

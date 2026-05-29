@@ -50,7 +50,7 @@ export class MockWebSocket extends EventEmitter {
 export function makeMatch(overrides?: Partial<Match>): Match {
   return {
     session_id: 'sess-test-123',
-    browser_id: 42,
+    schedule_id: 42,
     event_id: 'evt-1',
     chat_topic_id: 'topic-1',
     provider_user_id: 7,

@@ -25,6 +25,7 @@ type UserEventHandler = (events: Record<string, unknown>[]) => void;
 export class Browser {
   readonly sessionId: string;
   readonly browserId: number;
+  readonly scheduleId: number;
   readonly chatTopicId: string | null;
   readonly browserInfo: Record<string, unknown>;
   readonly providerUserId: number | null;
@@ -67,7 +68,8 @@ export class Browser {
   constructor(client: Client, match: Match, humanizer?: Humanizer | null) {
     this._client = client;
     this.sessionId = match.session_id;
-    this.browserId = match.browser_id;
+    this.browserId = match.schedule_id;
+    this.scheduleId = match.schedule_id;
     this.chatTopicId = match.chat_topic_id ?? null;
     this.browserInfo = match.browser_info ?? {};
     this.providerUserId = match.provider_user_id ?? null;
@@ -88,7 +90,7 @@ export class Browser {
     saveSession(this.sessionId, {
       session_id: this.sessionId,
       chat_topic_id: this.chatTopicId,
-      browser_id: this.browserId,
+      schedule_id: this.scheduleId,
       last_seen_ts: this._lastSeenTs,
     });
   }

@@ -56,7 +56,7 @@ describe('CLI', () => {
       }
     }
 
-    const r = await run(['rent', '--browser', '1'], { CEKI_API_KEY: '' });
+    const r = await run(['rent', '--schedule', '1'], { CEKI_API_KEY: '' });
     // The process should exit with code 2
     // execFile returns the exit code via error.code as a number
     expect(r.stderr).toContain('"error"');

@@ -65,7 +65,7 @@ describe('search()', () => {
   it('calls HTTP API with Bearer token', async () => {
     const mockFetch = vi.fn().mockResolvedValue({
       ok: true,
-      json: async () => ({ data: [{ browser_id: 1, price_per_min: 0.5, online: true }] }),
+      json: async () => ({ data: [{ schedule_id: 1, price_per_min: 0.5, online: true }] }),
     });
     vi.stubGlobal('fetch', mockFetch);
 
@@ -79,7 +79,7 @@ describe('search()', () => {
     expect(url).toContain('limit=10');
     expect(opts.headers.Authorization).toBe('Bearer test-key');
     expect(results).toHaveLength(1);
-    expect(results[0].browser_id).toBe(1);
+    expect(results[0].schedule_id).toBe(1);
 
     vi.unstubAllGlobals();
   });
@@ -101,7 +101,7 @@ describe('rent()', () => {
     ws.receive({
       type: 'match',
       event_id: 'evt-1',
-      browser_id: 42,
+      schedule_id: 42,
       session_id: 'sess-abc',
       chat_topic_id: 'topic-1',
       provider_user_id: 7,
@@ -110,7 +110,7 @@ describe('rent()', () => {
 
     const browser = await rentPromise;
     expect(browser.sessionId).toBe('sess-abc');
-    expect(browser.browserId).toBe(42);
+    expect(browser.scheduleId).toBe(42);
     expect(browser.chatTopicId).toBe('topic-1');
   });
 
@@ -154,14 +154,14 @@ describe('resume()', () => {
     ws.receive({
       type: 'resume_ok',
       session_id: 'sess-xyz',
-      browser_id: 10,
+      schedule_id: 10,
       chat_topic_id: 'topic-2',
       browser_info: {},
     });
 
     const browser = await resumePromise;
     expect(browser.sessionId).toBe('sess-xyz');
-    expect(browser.browserId).toBe(10);
+    expect(browser.scheduleId).toBe(10);
   });
 
   it('resume_ok propagates event_id to Browser', async () => {
@@ -174,7 +174,7 @@ describe('resume()', () => {
       type: 'resume_ok',
       session_id: 'sess-ev',
       event_id: 'evt-777',
-      browser_id: 10,
+      schedule_id: 10,
       chat_topic_id: null,
       browser_info: {},
     });
@@ -293,7 +293,7 @@ describe('close()', () => {
     // Rent a browser
     const rentPromise = client.rent(1);
     ws.receive({ type: 'rent_pending', event_id: 'e1' });
-    ws.receive({ type: 'match', event_id: 'e1', browser_id: 1, session_id: 's1' });
+    ws.receive({ type: 'match', event_id: 'e1', schedule_id: 1, session_id: 's1' });
     const browser = await rentPromise;
 
     // Simulate the server confirming session ended when close sends session.end
@@ -318,7 +318,7 @@ describe('disconnect()', () => {
 
     const rentPromise = client.rent(1);
     ws.receive({ type: 'rent_pending', event_id: 'e1' });
-    ws.receive({ type: 'match', event_id: 'e1', browser_id: 1, session_id: 's1' });
+    ws.receive({ type: 'match', event_id: 'e1', schedule_id: 1, session_id: 's1' });
     await rentPromise;
 
     await client.disconnect();

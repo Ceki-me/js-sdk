@@ -5,7 +5,7 @@ const client = await connect(process.env.CEKI_API_KEY!);
 const options = await client.search({ geo: 'US' });
 console.log(`Found ${options.length} browsers`);
 
-const browser = await client.rent(options[0].browser_id);
+const browser = await client.rent(options[0].schedule_id);
 console.log(`Session: ${browser.sessionId}`);
 
 await browser.navigate('https://example.com');
