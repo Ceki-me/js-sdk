@@ -1,7 +1,7 @@
 import { connect } from 'ceki-browser';
 
 const client = await connect(process.env.CEKI_API_KEY!);
-const browser = await client.rent(parseInt(process.env.SCHEDULE_ID!));
+const browser = await client.rent(parseInt(process.env.BROWSER_ID!));
 
 await browser.navigate('https://news.ycombinator.com');
 

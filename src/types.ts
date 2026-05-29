@@ -7,7 +7,7 @@ export interface ConnectOptions {
 }
 
 export interface BrowserOption {
-  schedule_id: number;
+  browser_id: number;
   user_id?: number | null;
   geo?: string | null;
   language?: string | null;
@@ -25,7 +25,7 @@ export interface BrowserOption {
 
 export interface Match {
   session_id: string;
-  schedule_id: number;
+  browser_id: number;
   event_id?: string | null;
   chat_topic_id?: string | null;
   provider_user_id?: number | null;
@@ -103,7 +103,7 @@ export interface ChatHistoryOptions {
 
 export interface SessionInfo {
   id: number;
-  schedule_id: number;
+  browser_id: number;
   started_at: string | null;
   ended_at: string | null;
   status: string;

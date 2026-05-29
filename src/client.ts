@@ -26,7 +26,7 @@ const PING_INTERVAL = 30000;
 const PONG_TIMEOUT = 90000;
 
 interface PendingRent {
-  scheduleId: number;
+  browserId: number;
   eventId: string | null;
   resolve: (match: Match) => void;
   reject: (err: Error) => void;
@@ -60,7 +60,7 @@ export class Client {
   private _pongTimer: ReturnType<typeof setTimeout> | null = null;
   private _lastPongAt = 0;
 
-  private _pendingRents: Map<string, PendingRent> = new Map(); // keyed by `rent:<scheduleId>` or eventId
+  private _pendingRents: Map<string, PendingRent> = new Map(); // keyed by `rent:<browserId>` or eventId
   private _pendingResumes: Map<string, PendingResume> = new Map(); // keyed by sessionId
 
   private _connectResolve: (() => void) | null = null;
@@ -163,12 +163,12 @@ export class Client {
     return (Array.isArray(items) ? items : []) as BrowserOption[];
   }
 
-  async rent(scheduleId: number, opts?: RentOptions): Promise<Browser> {
-    const rentMsg: Record<string, unknown> = { type: 'rent', browser_id: scheduleId };
+  async rent(browserId: number, opts?: RentOptions): Promise<Browser> {
+    const rentMsg: Record<string, unknown> = { type: 'rent', browser_id: browserId };
     if (opts?.mode) rentMsg.mode = opts.mode;
     this._wsSend(rentMsg);
 
-    const key = `rent:${scheduleId}`;
+    const key = `rent:${browserId}`;
 
     return new Promise<Browser>((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -177,7 +177,7 @@ export class Client {
       }, 90000);
 
       this._pendingRents.set(key, {
-        scheduleId,
+        browserId,
         eventId: null,
         opts,
         resolve: (match: Match) => {
@@ -540,7 +540,7 @@ export class Client {
 
   private _onMatch(msg: Record<string, unknown>): void {
     const eventId = String(msg.event_id ?? '');
-    const scheduleId = Number(msg.schedule_id ?? 0);
+    const browserId = Number(msg.browser_id ?? 0);
     const sessionId = String(msg.session_id ?? '');
 
     if (msg.requires_ack) {
@@ -550,18 +550,18 @@ export class Client {
     // Try eventId match first
     let pending = this._pendingRents.get(`event:${eventId}`);
     if (!pending) {
-      // Fallback to scheduleId match
-      pending = this._pendingRents.get(`rent:${scheduleId}`);
+      // Fallback to browserId match
+      pending = this._pendingRents.get(`rent:${browserId}`);
     }
 
     if (pending) {
       clearTimeout(pending.timer);
-      const key = pending.eventId ? `event:${pending.eventId}` : `rent:${pending.scheduleId}`;
+      const key = pending.eventId ? `event:${pending.eventId}` : `rent:${pending.browserId}`;
       this._pendingRents.delete(key);
 
       const match: Match = {
         session_id: sessionId,
-        schedule_id: scheduleId,
+        browser_id: browserId,
         event_id: eventId || null,
         chat_topic_id: msg.chat_topic_id ? String(msg.chat_topic_id) : null,
         provider_user_id: msg.provider_user_id != null ? Number(msg.provider_user_id) : null,
@@ -611,7 +611,7 @@ export class Client {
     const match: Match = {
       session_id: sessionId,
       event_id: msg.event_id != null ? String(msg.event_id) : null,
-      schedule_id: Number(msg.schedule_id ?? 0),
+      browser_id: Number(msg.browser_id ?? 0),
       chat_topic_id: msg.chat_topic_id ? String(msg.chat_topic_id) : null,
       provider_user_id: msg.provider_user_id != null ? Number(msg.provider_user_id) : null,
       started_at: Date.now(),

@@ -57,11 +57,11 @@ function parseBool(val: string): boolean {
 // --- Command handlers ---
 
 async function cmdRent(args: string[]): Promise<void> {
-  let scheduleId: number | null = null;
+  let browserId: number | null = null;
   let fingerprintFrom: string | null = null;
   let mode: 'incognito' | 'main' = 'incognito';
   for (let i = 0; i < args.length; i++) {
-    if (args[i] === '--schedule' && args[i + 1]) scheduleId = parseInt(args[++i], 10);
+    if (args[i] === '--browser' && args[i + 1]) browserId = parseInt(args[++i], 10);
     if (args[i] === '--fingerprint-from' && args[i + 1]) fingerprintFrom = args[++i];
     if (args[i] === '--mode' && args[i + 1]) {
       const v = args[++i];
@@ -72,8 +72,8 @@ async function cmdRent(args: string[]): Promise<void> {
       mode = v;
     }
   }
-  if (scheduleId == null) {
-    err('--schedule is required', 'args');
+  if (browserId == null) {
+    err('--browser is required', 'args');
     process.exit(1);
   }
 
@@ -86,17 +86,17 @@ async function cmdRent(args: string[]): Promise<void> {
 
   const client = await connect(apiKey, connectOptions());
   try {
-    const browser = await client.rent(scheduleId, { human: null, fingerprint: fpData, mode });
+    const browser = await client.rent(browserId, { human: null, fingerprint: fpData, mode });
     saveSession(browser.sessionId, {
       session_id: browser.sessionId,
       chat_topic_id: browser.chatTopicId,
-      schedule_id: browser.scheduleId,
+      browser_id: browser.browserId,
       last_seen_ts: null,
     });
     out({
       session_id: browser.sessionId,
       chat_topic_id: browser.chatTopicId,
-      schedule_id: browser.scheduleId,
+      browser_id: browser.browserId,
     });
   } finally {
     await closeClient(client);
@@ -144,7 +144,7 @@ async function cmdSessions(args: string[]): Promise<void> {
         process.stdout.write('No sessions found.\n');
         return;
       }
-      const header = 'SID'.padEnd(8) + 'SCHEDULE'.padEnd(10) + 'STARTED'.padEnd(22) + 'DURATION'.padEnd(10) + 'EARNED'.padEnd(9) + 'STATUS'.padEnd(10) + 'RENTER'.padEnd(16) + 'PROVIDER';
+      const header = 'SID'.padEnd(8) + 'BROWSER'.padEnd(10) + 'STARTED'.padEnd(22) + 'DURATION'.padEnd(10) + 'EARNED'.padEnd(9) + 'STATUS'.padEnd(10) + 'RENTER'.padEnd(16) + 'PROVIDER';
       process.stdout.write(header + '\n');
       for (const s of results) {
         const started = s.started_at ?? '—';
@@ -154,7 +154,7 @@ async function cmdSessions(args: string[]): Promise<void> {
         const earned = `$${s.earned.toFixed(2)}`;
         const renter = (s.renter as Record<string, string>)?.name ?? '—';
         const provider = (s.provider as Record<string, string>)?.name ?? '—';
-        const line = String(s.id).padEnd(8) + String(s.schedule_id).padEnd(10) + started.padEnd(22) + dur.padEnd(10) + earned.padEnd(9) + s.status.padEnd(10) + renter.padEnd(16) + provider;
+        const line = String(s.id).padEnd(8) + String(s.browser_id).padEnd(10) + started.padEnd(22) + dur.padEnd(10) + earned.padEnd(9) + s.status.padEnd(10) + renter.padEnd(16) + provider;
         process.stdout.write(line + '\n');
       }
     }
@@ -599,7 +599,7 @@ function printHelp(): void {
 Usage: ceki <command> [options]
 
 Commands:
-  rent --schedule N [--fingerprint-from PATH]
+  rent --browser N [--fingerprint-from PATH]
   my-browsers
   search [--limit N] [--filter k=v]...
   snapshot <sid> -o PATH
