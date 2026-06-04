@@ -193,10 +193,15 @@ export class Browser {
   }
 
   async type(text: string): Promise<void> {
+    // task 413 — typing humanizer moved into the extension. The SDK now
+    // sends ONE Ceki.typeText command instead of N per-char dispatchKey
+    // events, so long inputs no longer burn through the 500 cmd / 60s
+    // relay cap and the inter-key delays land without WS jitter.
     if (this._humanizer) {
       await this._humanizer.before('type');
 
-      // Re-click last pointer position to focus
+      // Re-click last pointer position to focus (kept on the SDK side so
+      // pre-focus stays exactly as before; this is one command, not N).
       if (this._lastPointer) {
         const [px, py] = this._lastPointer;
         await this.send({
@@ -208,21 +213,15 @@ export class Browser {
           params: { type: 'mouseReleased', x: px, y: py, button: 'left', clickCount: 1 },
         });
       }
+    }
 
-      // Type char-by-char with delays
-      for (const char of text) {
-        await this._sendKeystroke(char);
-        const delay = this._humanizer.typeDelay();
-        if (delay > 0) {
-          await new Promise<void>(r => setTimeout(r, delay));
-        }
-      }
+    const human = this._humanizer
+      ? (['natural', 'careful'].includes(this._humanizer.profile.name) ? this._humanizer.profile.name : 'natural')
+      : null;
+    await this.send({ method: 'Ceki.typeText', params: { text, human } });
 
+    if (this._humanizer) {
       await this._humanizer.after('type');
-    } else {
-      for (const char of text) {
-        await this._sendKeystroke(char);
-      }
     }
   }
 

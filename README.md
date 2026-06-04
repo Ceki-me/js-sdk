@@ -73,7 +73,7 @@ Close all sessions and the connection.
 ```typescript
 await browser.navigate(url)                      // Navigate to URL
 await browser.click(x, y)                         // Click at coordinates
-await browser.type(text)                          // Type text (char-by-char with humanizer)
+await browser.type(text)                          // Type text — one Ceki.typeText command; extension does per-char keydown/keyUp + humanizer delays
 await browser.scroll({ deltaY: -300 })            // Scroll
 await browser.screenshot({ format: 'png' })       // Screenshot as Buffer
 await browser.screenshot({ format: 'base64' })    // Screenshot as {data: string}

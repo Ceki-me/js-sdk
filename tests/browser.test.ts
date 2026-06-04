@@ -97,28 +97,28 @@ describe('click()', () => {
 });
 
 describe('type()', () => {
-  it('without humanizer sends dispatchKeyEvent per char', async () => {
+  it('without humanizer sends ONE Ceki.typeText carrying the full text', async () => {
     autoRespondCdp({});
 
     await browser.type('hello');
 
-    const keyEvents = ws.sent.filter(
-      m => m.type === 'cdp' && m.method === 'Input.dispatchKeyEvent',
+    const typeTextMsgs = ws.sent.filter(
+      m => m.type === 'cdp' && m.method === 'Ceki.typeText',
     );
-    const keyDowns = keyEvents.filter(m => (m.params as Record<string, unknown>).type === 'keyDown');
-    const keyUps = keyEvents.filter(m => (m.params as Record<string, unknown>).type === 'keyUp');
-    expect(keyDowns).toHaveLength(5);
-    expect(keyUps).toHaveLength(5);
-    expect((keyDowns[0].params as Record<string, unknown>).text).toBe('h');
-    expect((keyDowns[0].params as Record<string, unknown>).code).toBe('KeyH');
+    expect(typeTextMsgs).toHaveLength(1);
+    const params = typeTextMsgs[0].params as Record<string, unknown>;
+    expect(params.text).toBe('hello');
+    expect(params.human).toBeNull();
+    // No per-char dispatchKeyEvent leaks — humanizer lives in the extension now (task 413).
+    expect(ws.sent.filter(m => m.type === 'cdp' && m.method === 'Input.dispatchKeyEvent')).toHaveLength(0);
   });
 
-  it('with humanizer sends char-by-char dispatchKeyEvent with delays', async () => {
+  it('with humanizer sends ONE Ceki.typeText with the profile name', async () => {
     const { Humanizer } = await import('../src/humanize/humanizer.js');
     const { HumanProfile } = await import('../src/humanize/profile.js');
     const humanProfile = HumanProfile.fromDict({
       rng_seed: 42,
-      // Use tiny delays for test speed
+      name: 'natural',
       pre_action_ms: { type: [0, 0] },
       post_action_ms: { type: [0, 0] },
       typing: { wpm: 99999, jitter: 0, thinking_pause_prob: 0 },
@@ -127,47 +127,30 @@ describe('type()', () => {
 
     autoRespondCdp({});
 
-    const typeP = browser.type('ab');
-    // Advance timers enough for the type delays
-    await vi.advanceTimersByTimeAsync(500);
-    await typeP;
+    await browser.type('ab');
 
-    const keyEvents = ws.sent.filter(
-      m => m.type === 'cdp' && m.method === 'Input.dispatchKeyEvent',
+    const typeTextMsgs = ws.sent.filter(
+      m => m.type === 'cdp' && m.method === 'Ceki.typeText',
     );
-    const keyDowns = keyEvents.filter(m => (m.params as Record<string, unknown>).type === 'keyDown');
-    expect(keyDowns.length).toBe(2);
-    expect((keyDowns[0].params as Record<string, unknown>).text).toBe('a');
-    expect((keyDowns[1].params as Record<string, unknown>).text).toBe('b');
+    expect(typeTextMsgs).toHaveLength(1);
+    const params = typeTextMsgs[0].params as Record<string, unknown>;
+    expect(params.text).toBe('ab');
+    expect(params.human).toBe('natural');
   });
 
-  it('uppercase chars include Shift keyDown/keyUp', async () => {
+  it('mixed-case and non-ASCII still go in one Ceki.typeText — keymap lives in extension', async () => {
     autoRespondCdp({});
 
-    await browser.type('Hi');
+    await browser.type('Hi ы');
 
-    const keyEvents = ws.sent.filter(
-      m => m.type === 'cdp' && m.method === 'Input.dispatchKeyEvent',
+    const typeTextMsgs = ws.sent.filter(
+      m => m.type === 'cdp' && m.method === 'Ceki.typeText',
     );
-    // H: Shift down, H down, H up, Shift up = 4
-    // i: i down, i up = 2
-    // Total = 6
-    expect(keyEvents).toHaveLength(6);
-    expect((keyEvents[0].params as Record<string, unknown>).key).toBe('Shift');
-    expect((keyEvents[1].params as Record<string, unknown>).key).toBe('H');
-    expect((keyEvents[1].params as Record<string, unknown>).modifiers).toBe(8);
-  });
-
-  it('non-ASCII falls back to Input.insertText', async () => {
-    autoRespondCdp({});
-
-    await browser.type('ы');
-
-    const insertMsgs = ws.sent.filter(
-      m => m.type === 'cdp' && m.method === 'Input.insertText',
-    );
-    expect(insertMsgs).toHaveLength(1);
-    expect((insertMsgs[0].params as Record<string, unknown>).text).toBe('ы');
+    expect(typeTextMsgs).toHaveLength(1);
+    expect((typeTextMsgs[0].params as Record<string, unknown>).text).toBe('Hi ы');
+    // SDK no longer splits per char — extension handles Shift / non-ASCII fallback.
+    expect(ws.sent.filter(m => m.type === 'cdp' && m.method === 'Input.dispatchKeyEvent')).toHaveLength(0);
+    expect(ws.sent.filter(m => m.type === 'cdp' && m.method === 'Input.insertText')).toHaveLength(0);
   });
 });
 
