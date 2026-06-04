@@ -114,6 +114,28 @@ describe('rent()', () => {
     expect(browser.chatTopicId).toBe('topic-1');
   });
 
+  it('forwards mode in rent WS message when given (task 399 / #310)', async () => {
+    const client = await createClient();
+    const ws = MockWebSocket.last();
+
+    const rentPromise = client.rent(42, { mode: 'main' });
+
+    expect(ws.sent).toContainEqual({ type: 'rent', browser_id: 42, mode: 'main' });
+
+    ws.receive({ type: 'rent_pending', event_id: 'evt-mode' });
+    ws.receive({
+      type: 'match',
+      event_id: 'evt-mode',
+      schedule_id: 42,
+      session_id: 'sess-mode',
+      chat_topic_id: 'topic-mode',
+      provider_user_id: 7,
+      browser_info: { ua: 'Chrome' },
+    });
+
+    await rentPromise;
+  });
+
   it('rejects with ProviderOffline on provider_offline error', async () => {
     const client = await createClient();
     const ws = MockWebSocket.last();
