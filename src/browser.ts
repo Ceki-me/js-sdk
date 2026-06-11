@@ -607,14 +607,19 @@ export class Browser {
       acceptance_deadline_at: Math.floor(acceptanceTimeout),
       completion_deadline_at: Math.floor(completionTimeout),
     };
-
-    const resp = await fetch(`${this._client._apiUrl}/api/agent/sessions/${this._eventId}/captcha-request`, {
-      method: 'POST',
-      headers: this._apiHeaders(),
-      body: JSON.stringify(body),
-    });
-    if (!resp.ok) {
-      throw new Error(`Captcha request failed: ${resp.status}`);
+    const url = `${this._client._apiUrl}/api/agent/sessions/${this._eventId}/captcha-request`;
+    const backoff = [0, 500, 1000, 2000, 4000];
+    let resp: Response | null = null;
+    let text = '';
+    for (const delay of backoff) {
+      if (delay > 0) await new Promise((r) => setTimeout(r, delay));
+      resp = await fetch(url, { method: 'POST', headers: this._apiHeaders(), body: JSON.stringify(body) });
+      if (resp.status !== 422) break;
+      text = await resp.clone().text();
+      if (!text.includes('Session not active')) break;
+    }
+    if (!resp || !resp.ok) {
+      throw new Error(`Captcha request failed: ${resp?.status ?? 'no_response'}${text ? ' — ' + text.slice(0, 200) : ''}`);
     }
     const result = await resp.json() as { id: number; amount: number };
     if (!result.id) throw new Error('Captcha request did not return an id');
