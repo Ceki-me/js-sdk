@@ -206,16 +206,21 @@ async function cmdSnapshot(sid: string, args: string[]): Promise<void> {
   }
 }
 
+function parseNoHuman(args: string[]): boolean {
+  return args.includes('--no-human') || args.includes('--raw');
+}
+
 async function cmdNavigate(sid: string, args: string[]): Promise<void> {
-  const url = args[0];
+  const url = args.find((a) => !a.startsWith('--'));
   if (!url) {
     err('URL is required', 'args');
     process.exit(1);
   }
+  const raw = parseNoHuman(args);
   const apiKey = getApiKey();
   const [client, browser] = await resumeBrowser(apiKey, sid);
   try {
-    await browser.navigate(url);
+    await browser.navigate(url, 30000, raw ? { human: false } : undefined);
     out({ ok: true });
   } finally {
     await closeClient(client);
@@ -223,16 +228,18 @@ async function cmdNavigate(sid: string, args: string[]): Promise<void> {
 }
 
 async function cmdClick(sid: string, args: string[]): Promise<void> {
-  const x = parseInt(args[0], 10);
-  const y = parseInt(args[1], 10);
+  const positional = args.filter((a) => !a.startsWith('--'));
+  const x = parseInt(positional[0], 10);
+  const y = parseInt(positional[1], 10);
   if (isNaN(x) || isNaN(y)) {
     err('x and y coordinates are required', 'args');
     process.exit(1);
   }
+  const raw = parseNoHuman(args);
   const apiKey = getApiKey();
   const [client, browser] = await resumeBrowser(apiKey, sid);
   try {
-    await browser.click(x, y);
+    await browser.click(x, y, raw ? { human: false } : undefined);
     out({ ok: true, pointer: [x, y] });
   } finally {
     await closeClient(client);
@@ -240,10 +247,14 @@ async function cmdClick(sid: string, args: string[]): Promise<void> {
 }
 
 async function cmdType(sid: string, args: string[]): Promise<void> {
+  // task 429/431 — typing is humanized BY DEFAULT in both modes. --no-human
+  // (or --raw) flattens THIS call only. --natural is a no-op alias kept for
+  // backwards compatibility.
   let text = '';
-  let natural = false;
+  let raw = false;
   for (let i = 0; i < args.length; i++) {
-    if (args[i] === '--natural') natural = true;
+    if (args[i] === '--no-human' || args[i] === '--raw') raw = true;
+    else if (args[i] === '--natural') { /* no-op alias */ }
     else if (!text) text = args[i];
   }
   if (!text) {
@@ -251,14 +262,10 @@ async function cmdType(sid: string, args: string[]): Promise<void> {
     process.exit(1);
   }
   const apiKey = getApiKey();
-  const human = natural ? 'natural' as const : null;
   const client = await connect(apiKey, connectOptions());
   try {
-    const browser = await client.resume(sid, { human });
-    if (!natural) {
-      browser._humanizer = null;
-    }
-    await browser.type(text);
+    const browser = await client.resume(sid);
+    await browser.type(text, raw ? { human: false } : undefined);
     out({ ok: true });
   } finally {
     await closeClient(client);
@@ -266,17 +273,21 @@ async function cmdType(sid: string, args: string[]): Promise<void> {
 }
 
 async function cmdScroll(sid: string, args: string[]): Promise<void> {
-  const x = parseInt(args[0], 10);
-  const y = parseInt(args[1], 10);
-  const dy = parseInt(args[2], 10);
+  const positional = args.filter((a) => !a.startsWith('--'));
+  const x = parseInt(positional[0], 10);
+  const y = parseInt(positional[1], 10);
+  const dy = parseInt(positional[2], 10);
   if (isNaN(x) || isNaN(y) || isNaN(dy)) {
     err('x, y, dy are required', 'args');
     process.exit(1);
   }
+  const raw = parseNoHuman(args);
   const apiKey = getApiKey();
   const [client, browser] = await resumeBrowser(apiKey, sid);
   try {
-    await browser.scroll({ x, y, deltaY: dy });
+    const scrollOpts: Record<string, unknown> = { x, y, deltaY: dy };
+    if (raw) scrollOpts.human = false;
+    await browser.scroll(scrollOpts);
     out({ ok: true });
   } finally {
     await closeClient(client);
@@ -604,10 +615,10 @@ Commands:
   search [--limit N] [--filter k=v]...
   snapshot <sid> -o PATH
   screenshot <sid> -o PATH [--full]
-  navigate <sid> <url>
-  click <sid> <x> <y>
-  type <sid> "<text>" [--natural]
-  scroll <sid> <x> <y> <dy>
+  navigate <sid> <url> [--no-human|--raw]
+  click <sid> <x> <y> [--no-human|--raw]
+  type <sid> "<text>" [--no-human|--raw]   (humanized by default)
+  scroll <sid> <x> <y> <dy> [--no-human|--raw]
   switch-tab <sid>
   configure <sid> [--masking-mode true|false] [--fingerprint true|false]
   cdp <sid> --method <M> [--params JSON]

@@ -111,24 +111,41 @@ await browser.profile.import(saved);
 
 ## Human Mode
 
-Browser actions include human-like timing by default — delays before/after actions and per-character typing with jitter.
+Behavioral humanization is **ON by default** in both `main` and `incognito` profile modes:
+
+- **Typing** — per-character keystrokes with natural inter-key cadence + jitter (extension-side, `Ceki.typeText`).
+- **Mouse** — clicks are preceded by a bezier mousemove trajectory (8–35 intermediate `mouseMoved` events), so the page sees a real pointer trail instead of a teleport.
+
+Fingerprint Tier-2 (UA / timezone / WebGL overrides) stays OFF in `main` mode to preserve the provider's identity — separate from behavioral humanization.
 
 ```typescript
-// Default: natural profile (enabled by default)
+// Default: behavioral humanizer ON (natural profile)
 const browser = await client.rent(scheduleId);
 
 // Explicit profile
 const browser = await client.rent(scheduleId, { human: 'careful' });
 
-// Disable humanization
+// Disable session-wide humanization
 const browser = await client.rent(scheduleId, { human: null });
 ```
+
+### Per-call disable
+
+Pass `{ human: false }` to flatten **just one call**, without leaking jitter to siblings:
+
+```typescript
+await browser.type('user@example.com', { human: false });   // flat keystrokes
+await browser.click(120, 240, { human: false });            // straight pointer jump
+await browser.scroll({ deltaY: -300, human: false });
+```
+
+The CLI equivalent is `--no-human` / `--raw` on `type`, `click`, `scroll`, `navigate`. Both flags mean "this call only".
 
 ### Environment overrides
 
 - `CEKI_HUMAN_PROFILE` — Override default profile name (`careful`)
 - `CEKI_HUMAN_PROFILE_PATH` — Path to custom JSON profile file
-- `CEKI_HUMAN_DISABLE=1` — Disable humanization entirely
+- `CEKI_HUMAN_DISABLE=1` — **Global kill-switch**: disable humanization for every call regardless of per-call `human:` arguments or CLI flags
 
 ## Error Classes
 
@@ -194,10 +211,10 @@ The CLI persists session state locally — after `rent` it saves the session ID 
 
 | Command | Description |
 |---|---|
-| `navigate SID URL` | Open URL |
-| `click SID X Y` | Click at viewport coordinates |
-| `type SID TEXT [--natural]` | Type text into focused element |
-| `scroll SID X Y DY` | Scroll from (X, Y) by `DY` pixels |
+| `navigate SID URL [--no-human\|--raw]` | Open URL (humanized by default; `--no-human` skips pre/post delays) |
+| `click SID X Y [--no-human\|--raw]` | Click at viewport coordinates (mousemove trail ON by default; `--no-human` for direct jump) |
+| `type SID TEXT [--selector CSS] [--no-human\|--raw]` | Type text (humanized by default; `--no-human` for flat keystrokes) |
+| `scroll SID X Y DY [--no-human\|--raw]` | Scroll from (X, Y) by `DY` pixels (eased by default; `--no-human` for raw CDP wheel) |
 | `screenshot SID -o FILE [--format png\|jpeg] [--full]` | Save screenshot |
 | `snapshot SID -o FILE` | Screenshot + new chat messages |
 | `switch-tab SID` | Switch active tab |

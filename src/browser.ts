@@ -127,22 +127,35 @@ export class Browser {
     });
   }
 
-  async navigate(url: string, timeout = 30000): Promise<{ url: string; frameId?: string }> {
-    if (this._humanizer) await this._humanizer.before('navigate');
+  // task 427 — per-call kill-switch. human=false bypasses humanizer timings
+  // AND tells the extension to skip mouse-jitter via the `_ceki_raw` marker
+  // (see cdp.ts). human=true forces humanizer; human undefined = session
+  // default. Global env CEKI_HUMAN_DISABLE=1 nulls this._humanizer in the
+  // constructor so all paths become raw.
+  private _humanizeForCall(human?: boolean): Humanizer | null {
+    if (human === false) return null;
+    return this._humanizer;
+  }
+
+  async navigate(url: string, timeout = 30000, opts?: { human?: boolean }): Promise<{ url: string; frameId?: string }> {
+    const h = this._humanizeForCall(opts?.human);
+    if (h) await h.before('navigate');
     const result = await this.send({ method: 'Page.navigate', params: { url } }, timeout) as Record<string, unknown>;
-    if (this._humanizer) await this._humanizer.after('navigate');
+    if (h) await h.after('navigate');
     return {
       url: String(result?.url ?? url),
       frameId: result?.frameId ? String(result.frameId) : undefined,
     };
   }
 
-  async click(x: number, y: number): Promise<void> {
-    if (this._humanizer) await this._humanizer.before('click');
+  async click(x: number, y: number, opts?: { human?: boolean }): Promise<void> {
+    const h = this._humanizeForCall(opts?.human);
+    if (h) await h.before('click');
 
+    const rawFlag: Record<string, unknown> = h === null ? { _ceki_raw: true } : {};
     await this.send({
       method: 'Input.dispatchMouseEvent',
-      params: { type: 'mousePressed', x, y, button: 'left', clickCount: 1 },
+      params: { type: 'mousePressed', x, y, button: 'left', clickCount: 1, ...rawFlag },
     });
     await this.send({
       method: 'Input.dispatchMouseEvent',
@@ -151,7 +164,7 @@ export class Browser {
 
     this._lastPointer = [x, y];
 
-    if (this._humanizer) await this._humanizer.after('click');
+    if (h) await h.after('click');
   }
 
   private async _sendKeystroke(char: string): Promise<void> {
@@ -192,13 +205,14 @@ export class Browser {
     }
   }
 
-  async type(text: string): Promise<void> {
+  async type(text: string, opts?: { human?: boolean }): Promise<void> {
     // task 413 — typing humanizer moved into the extension. The SDK now
     // sends ONE Ceki.typeText command instead of N per-char dispatchKey
     // events, so long inputs no longer burn through the 500 cmd / 60s
     // relay cap and the inter-key delays land without WS jitter.
-    if (this._humanizer) {
-      await this._humanizer.before('type');
+    const h = this._humanizeForCall(opts?.human);
+    if (h) {
+      await h.before('type');
 
       // Re-click last pointer position to focus (kept on the SDK side so
       // pre-focus stays exactly as before; this is one command, not N).
@@ -215,23 +229,24 @@ export class Browser {
       }
     }
 
-    const human = this._humanizer
-      ? (['natural', 'careful'].includes(this._humanizer.profile.name) ? this._humanizer.profile.name : 'natural')
+    const human = h
+      ? (['natural', 'careful'].includes(h.profile.name) ? h.profile.name : 'natural')
       : null;
     await this.send({ method: 'Ceki.typeText', params: { text, human } });
 
-    if (this._humanizer) {
-      await this._humanizer.after('type');
+    if (h) {
+      await h.after('type');
     }
   }
 
-  async scroll(opts?: ScrollOptions): Promise<void> {
+  async scroll(opts?: ScrollOptions & { human?: boolean }): Promise<void> {
     const x = opts?.x ?? 0;
     const y = opts?.y ?? 0;
     const deltaX = opts?.deltaX ?? 0;
     const deltaY = opts?.deltaY ?? -300;
 
-    if (this._humanizer) await this._humanizer.before('scroll');
+    const h = this._humanizeForCall(opts?.human);
+    if (h) await h.before('scroll');
 
     await this.send({
       method: 'Input.dispatchMouseEvent',
@@ -240,7 +255,7 @@ export class Browser {
 
     this._lastPointer = [x, y];
 
-    if (this._humanizer) await this._humanizer.after('scroll');
+    if (h) await h.after('scroll');
   }
 
   async screenshot(opts?: ScreenshotOptions): Promise<{ data: string } | Buffer> {

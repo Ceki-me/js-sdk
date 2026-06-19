@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>plugin-integration fixture</title>
+  <style>
+    body { font: 14px/1.4 system-ui, sans-serif; padding: 20px; }
+    label { display: block; margin: 12px 0 4px; }
+    input, button, textarea { font: inherit; padding: 6px 8px; }
+    #blur-status { color: #888; }
+    #blur-status.ok { color: green; font-weight: bold; }
+    .spacer { height: 1500px; background: linear-gradient(#fafafa, #eef); }
+    #click-target { padding: 8px 16px; }
+    #click-target.clicked { background: #cfd; font-weight: bold; }
+  </style>
+</head>
+<body>
+  <h1 id="title">plugin-integration fixture</h1>
+  <p id="loc"></p>
+
+  <label for="email">email</label>
+  <input id="email" type="email" name="email" autocomplete="off">
+
+  <label for="email2">email-no-selector</label>
+  <input id="email2" type="email" name="email2" autocomplete="off">
+
+  <label for="textarea1">textarea</label>
+  <textarea id="textarea1" rows="3" cols="40"></textarea>
+
+  <label for="file1">file upload</label>
+  <input id="file1" type="file" name="file1">
+
+  <p>
+    <button id="btn-counter" type="button">click-me (count: <span id="cnt">0</span>)</button>
+    <button id="click-target" type="button">click-target</button>
+    <a id="open-tab" href="javascript:void(0)" onclick="window.open(location.href + '?tab=2', '_blank')">open new tab</a>
+  </p>
+
+  <p id="blur-status">blur-status: none</p>
+  <p id="pointer">pointer: -</p>
+  <p id="click-marker">click-marker: -</p>
+
+  <div class="spacer">scroll target</div>
+  <p id="scroll-marker">SCROLL_MARKER_BOTTOM</p>
+
+  <script>
+    document.getElementById('loc').textContent = 'loc=' + location.href;
+
+    // Blur tracker
+    document.getElementById('email').addEventListener('blur', function () {
+      var s = document.getElementById('blur-status');
+      s.textContent = 'blur-status: BLURRED';
+      s.className = 'ok';
+    });
+
+    // Click counter (existing)
+    document.getElementById('btn-counter').addEventListener('click', function () {
+      var c = document.getElementById('cnt');
+      c.textContent = String(parseInt(c.textContent, 10) + 1);
+    });
+
+    // Click target (new — visible marker for selector-click case)
+    document.getElementById('click-target').addEventListener('click', function (ev) {
+      this.classList.add('clicked');
+      document.getElementById('click-marker').textContent =
+        'click-marker: clicked@' + Math.round(ev.clientX) + ',' + Math.round(ev.clientY);
+    });
+
+    // Upload marker (existing)
+    document.getElementById('file1').addEventListener('change', function (e) {
+      var f = e.target.files && e.target.files[0];
+      if (f) {
+        var p = document.createElement('p');
+        p.id = 'upload-status';
+        p.textContent = 'FILE_UPLOADED name=' + f.name + ' size=' + f.size;
+        document.body.appendChild(p);
+      }
+    });
+
+    // Pointer tracker (new — records last N coords for pointer-tracking case)
+    window.__pointerLog = [];
+    document.addEventListener('mousemove', function (e) {
+      window.__pointerLog.push([Math.round(e.clientX), Math.round(e.clientY), Date.now()]);
+      if (window.__pointerLog.length > 200) window.__pointerLog.shift();
+      document.getElementById('pointer').textContent =
+        'pointer: ' + Math.round(e.clientX) + ',' + Math.round(e.clientY);
+    }, true);
+
+    // Keystroke timing (new — records keydown timestamps for natural-timing case).
+    window.__keyTimes = [];
+    var keyHandler = function (e) {
+      window.__keyTimes.push({ key: e.key, t: performance.now() });
+      if (window.__keyTimes.length > 200) window.__keyTimes.shift();
+    };
+    document.getElementById('email').addEventListener('keydown', keyHandler);
+    document.getElementById('email2').addEventListener('keydown', keyHandler);
+    document.getElementById('textarea1').addEventListener('keydown', keyHandler);
+
+    // Scroll telemetry (task 2583 part E + scroll-easing).
+    // scroll handler is passive — pushes [scrollY, t] on every native scroll
+    // event so a single ceki scroll command can be inspected as one jump
+    // (raw / disabled humanizer) or many micro-steps (smooth easing).
+    window.__scrollLog = [];
+    window.addEventListener('scroll', function () {
+      window.__scrollLog.push([window.scrollY, performance.now()]);
+      if (window.__scrollLog.length > 500) window.__scrollLog.shift();
+    }, { passive: true });
+
+    // Tab-id beacon for single-tab probe alternative — content scripts can
+    // query localStorage 'qa_tab_ids' to see all live fixture tabs even when
+    // Target.getTargets is not surfaced through the relay.
+    (function () {
+      try {
+        var tabId = (location.search.match(/[?&]tab=([^&]+)/) || [])[1] || 'A1';
+        var key = 'qa_tab_ids';
+        var beat = function () {
+          var live = {};
+          try { live = JSON.parse(localStorage.getItem(key) || '{}'); } catch (e) {}
+          live[tabId] = Date.now();
+          // drop entries older than 3s — closed tabs stop heart-beating
+          for (var k in live) if (Date.now() - live[k] > 3000) delete live[k];
+          localStorage.setItem(key, JSON.stringify(live));
+        };
+        beat();
+        setInterval(beat, 500);
+        window.__qaTabId = tabId;
+      } catch (e) {}
+    })();
+
+    // Behavioral detector — naïve "is this a human or bot" scoring used by
+    // the humanizer regression cases. Looks at recent mousemove density
+    // and inter-keystroke jitter. Humanizer ON → expected human-like;
+    // raw / disabled → expected bot-like.
+    window.__botScore = function () {
+      var pts = window.__pointerLog || [];
+      var keys = window.__keyTimes || [];
+      var mouseTrail = pts.length;
+      var keyIntervals = [];
+      for (var i = 1; i < keys.length; i++) keyIntervals.push(keys[i].t - keys[i - 1].t);
+      var mean = keyIntervals.reduce(function (a, b) { return a + b; }, 0) / (keyIntervals.length || 1);
+      var variance = keyIntervals.reduce(function (a, b) { return a + (b - mean) * (b - mean); }, 0) / (keyIntervals.length || 1);
+      var kbStddev = Math.sqrt(variance);
+      // Heuristic: bot = no mousemove trail at all OR keystrokes all at t≈0.
+      var humanLike = mouseTrail >= 2 && (keyIntervals.length === 0 || kbStddev >= 3);
+      return {
+        humanLike: humanLike,
+        mouseTrail: mouseTrail,
+        kbIntervals: keyIntervals.length,
+        kbStddev: Math.round(kbStddev * 10) / 10,
+        reason: humanLike ? 'trail+jitter' : (mouseTrail < 2 ? 'no-mousemove' : 'flat-keystrokes'),
+      };
+    };
+
+    // Reset hook for tests that need a fresh state mid-session.
+    window.__qaReset = function () {
+      window.__pointerLog = [];
+      window.__keyTimes = [];
+      window.__scrollLog = [];
+      document.getElementById('email').value = '';
+      document.getElementById('email2').value = '';
+      document.getElementById('textarea1').value = '';
+      document.getElementById('cnt').textContent = '0';
+      document.getElementById('blur-status').textContent = 'blur-status: none';
+      document.getElementById('blur-status').className = '';
+      document.getElementById('click-marker').textContent = 'click-marker: -';
+      document.getElementById('click-target').classList.remove('clicked');
+      var u = document.getElementById('upload-status');
+      if (u) u.remove();
+    };
+  </script>
+</body>
+</html>
