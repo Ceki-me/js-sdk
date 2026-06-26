@@ -18,6 +18,7 @@ import { saveSession, loadSession, deleteSession, getLastSeenTs, updateLastSeenT
 import type { ConnectOptions, ChatMessage } from './types.js';
 import type { Client } from './client.js';
 import type { Browser } from './browser.js';
+import { cmdContract, cmdTimelog } from './contract-cli.js';
 
 function out(data: unknown): void {
   process.stdout.write(JSON.stringify(data) + '\n');
@@ -633,12 +634,46 @@ Commands:
   profile import <sid> -i file
   stop <sid>
 
+  contract list
+  contract members <cid>
+  contract tasks [cid]                (default: CEKI_CONTRACT_IDS)
+  contract my-jobs
+  contract task <eid>
+  contract children <eid>
+  contract history <eid> [--limit N]
+  contract create [cid] --label X [--type N] [--status N] [--kal-schedule N]
+                       [--start S] [--end E] [--timezone TZ] [--date D]
+                       [--duration N] [--amount N] [--currency C]
+                       [--benefitable agent:N|user:N]
+                       [--reviewer agent:N|user:N] [--qa agent:N|user:N]
+                       [--participant agent:N:reviewer|user:N:qa|agent:N:role:NUM]...
+                       [--desc text] [--data JSON]
+  contract comment <eid> [--label X] [--type N] [--status N] [--start S]
+                          [--end E] [--date D] [--duration N] [--amount N]
+                          [--currency C] [--benefitable agent:N] [--desc text]
+  contract propose <eid> [--status N] [--label X] [--desc text] [--start S]
+                          [--end E] [--date D] [--duration N] [--amount N]
+                          [--currency C] [--benefitable agent:N]
+  contract progress <eid> [--status N] --desc TEXT
+  contract vote <eid> --ids 1,2,3 --vote true|false
+  contract poll
+  contract watch [interval]
+  contract tools
+  contract raw <tool> [JSON]
+
+  timelog start <event_id>
+  timelog stop <event_id> [--label TEXT]
+  timelog check <event_id>
+
 Environment:
   CEKI_API_KEY (required)
   CEKI_RELAY_URL (default: wss://browser.ceki.me/ws/agent)
   CEKI_API_URL (default: https://api.ceki.me)
   CEKI_CHAT_URL (default: https://chat.ceki.me/api/chat)
   CEKI_BASIC_AUTH_USER / CEKI_BASIC_AUTH_PASS (optional)
+  CEKI_AGENT_TOKEN (contract/timelog; falls back to CEKI_API_KEY)
+  CEKI_AGENT_MCP_ENDPOINT (override /mcp/agent endpoint)
+  CEKI_CONTRACT_IDS (default contract for 'contract tasks'/'create')
 
 Exit codes: 0=success, 1=error, 2=auth, 3=session_not_found, 4=timeout, 5=network`);
 }
@@ -666,6 +701,13 @@ async function main(): Promise<void> {
 
   const command = argv[0];
   const rest = argv.slice(1);
+
+  if (command === 'contract') {
+    process.exit(await cmdContract(rest));
+  }
+  if (command === 'timelog') {
+    process.exit(await cmdTimelog(rest));
+  }
 
   switch (command) {
     case 'rent':

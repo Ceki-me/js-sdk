@@ -40,3 +40,29 @@ export type {
   CaptchaResult,
   SessionInfo,
 } from './types.js';
+
+export {
+  ContractClient,
+  ContractError,
+  ROLE_REVIEWER,
+  ROLE_QA,
+  parseBenefitable,
+  parseParticipant,
+  cleanArgs,
+  deriveLabel,
+  contractIdsFromEnv,
+} from './contract.js';
+export type {
+  Benefitable,
+  ParticipantSpec,
+  ContractClientOptions,
+  CreateOptions,
+  CommentOptions,
+  ProposeOptions,
+  ProgressOptions,
+  ProgressResult,
+  HttpClient,
+  HttpResponse,
+} from './contract.js';
+export { TimelogClient } from './timelog.js';
+export type { TimelogClientOptions } from './timelog.js';
