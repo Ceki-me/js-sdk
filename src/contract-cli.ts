@@ -190,6 +190,10 @@ export async function cmdContract(argv: string[]): Promise<number> {
         }
         return 0;
       }
+      case 'my-events': {
+        dump(await client.myEvents());
+        return 0;
+      }
       case 'my-jobs': {
         dump(await client.myJobs());
         return 0;

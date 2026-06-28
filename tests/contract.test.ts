@@ -332,6 +332,35 @@ describe('history()', () => {
   });
 });
 
+// ── wire-name swap regression guards ─────────────────────────────
+//
+// Backend swapped:
+//   get-my-jobs   (formerly contract tasks)      → get-my-events
+//   get-hire-jobs (formerly posted hire jobs)    → get-my-jobs
+//
+// SDK semantics:
+//   myEvents() = contract events assigned to me (calls get-my-events)
+//   myJobs()   = hire schedules I posted        (calls get-my-jobs)
+
+describe('myEvents() / myJobs() wire-name swap', () => {
+  it('myEvents() calls get-my-events with no args (plate feed)', async () => {
+    const { http, cap } = makeHttp({ body: mcpText([]) });
+    const c = new ContractClient({ endpoint: 'http://x/mcp/agent', token: 't', http });
+    await c.myEvents();
+    const body = lastBody(cap);
+    expect((body.params as Record<string, unknown>).name).toBe('get-my-events');
+    expect(lastArgs(cap)).toEqual({});
+  });
+  it('myJobs() calls get-my-jobs with no args (hire-schedule listings)', async () => {
+    const { http, cap } = makeHttp({ body: mcpText([]) });
+    const c = new ContractClient({ endpoint: 'http://x/mcp/agent', token: 't', http });
+    await c.myJobs();
+    const body = lastBody(cap);
+    expect((body.params as Record<string, unknown>).name).toBe('get-my-jobs');
+    expect(lastArgs(cap)).toEqual({});
+  });
+});
+
 // ── polling ───────────────────────────────────────────────────────
 
 describe('poll()', () => {

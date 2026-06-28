@@ -114,10 +114,17 @@ function resolveToken(): string {
   return process.env.CEKI_AGENT_TOKEN ?? process.env.CEKI_API_KEY ?? '';
 }
 
+// Wire names swapped on the backend:
+//   get-my-jobs   (formerly contract tasks)      → get-my-events
+//   get-hire-jobs (formerly posted hire jobs)    → get-my-jobs
+// The two sugar keys reflect the new, non-cross-contaminated semantics:
+//   'my-events' = contract events assigned to me  (the plate feed)
+//   'my-jobs'   = hire schedules I posted (type 3) (the listings feed)
 const TOOL_MAP = {
   list: 'get-my-contracts',
   members: 'get-contract-members',
   tasks: 'get-contract-events',
+  'my-events': 'get-my-events',
   'my-jobs': 'get-my-jobs',
   task: 'get-event',
   children: 'get-event-children',
@@ -354,6 +361,21 @@ export class ContractClient {
     return this.call(TOOL_MAP.tasks, { contract_id: Number(contractId) });
   }
 
+  /** Contract events assigned to me — the agent's plate feed.
+   *
+   * Calls `get-my-events` (formerly `get-my-jobs`; backend renamed
+   * the wire tool when the listings feed reclaimed `get-my-jobs`).
+   */
+  async myEvents(): Promise<unknown> {
+    return this.call(TOOL_MAP['my-events'], {});
+  }
+
+  /** Hire schedules I posted (type 3) — the listings feed.
+   *
+   * Calls `get-my-jobs` (the wire name was reused for this semantic
+   * after the backend swap; previously this method returned contract
+   * events — use `myEvents()` for that now).
+   */
   async myJobs(): Promise<unknown> {
     return this.call(TOOL_MAP['my-jobs'], {});
   }

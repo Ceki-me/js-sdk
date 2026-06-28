@@ -637,7 +637,8 @@ Commands:
   contract list
   contract members <cid>
   contract tasks [cid]                (default: CEKI_CONTRACT_IDS)
-  contract my-jobs
+  contract my-events                  (get-my-events — contract events assigned to me; the plate feed)
+  contract my-jobs                    (get-my-jobs   — hire schedules I posted, type 3; the listings feed)
   contract task <eid>
   contract children <eid>
   contract history <eid> [--limit N]
