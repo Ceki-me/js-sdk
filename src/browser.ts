@@ -380,6 +380,46 @@ export class Browser {
     return { ok: true, filename: resolvedFilename, size };
   }
 
+  /**
+   * Return the text of the current window selection.
+   *
+   * Uses `Runtime.evaluate` with `window.getSelection().toString()`. Does NOT
+   * touch the OS clipboard (no `navigator.clipboard` — not in the main-mode CDP
+   * allowlist). Returns `""` when nothing is selected.
+   */
+  async copy(): Promise<string> {
+    const res = await this.send({
+      method: 'Runtime.evaluate',
+      params: { expression: 'window.getSelection().toString()', returnByValue: true },
+    }) as Record<string, unknown>;
+    const resultObj = res?.result as Record<string, unknown> | undefined;
+    const v = resultObj?.value;
+    return typeof v === 'string' ? v : '';
+  }
+
+  /**
+   * Focus the element matching `selector` and insert `text` via CDP.
+   *
+   * Runs `document.querySelector(<selector>).focus()` through `Runtime.evaluate`,
+   * then dispatches `Input.insertText`. `insertText` fires real
+   * `input`/`beforeinput` events, so controlled React/Vue inputs pick up the
+   * update.
+   *
+   * `selector` is JSON-escaped, so quotes / backticks / newlines / unicode in
+   * the selector are safe. `text` goes to the CDP param verbatim.
+   */
+  async paste(selector: string, text: string): Promise<void> {
+    const focusExpr = `document.querySelector(${JSON.stringify(selector)}).focus()`;
+    await this.send({
+      method: 'Runtime.evaluate',
+      params: { expression: focusExpr },
+    });
+    await this.send({
+      method: 'Input.insertText',
+      params: { text },
+    });
+  }
+
   async switchTab(): Promise<void> {
     this._sendRaw({ type: 'switch_tab', session_id: this.sessionId });
   }
