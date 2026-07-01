@@ -370,6 +370,29 @@ export class ContractClient {
     return this.call(TOOL_MAP['my-events'], {});
   }
 
+  /** Escalate to a human up the event→parent→contract→schedule chain.
+   *
+   * Wraps the `call-human` MCP tool. Returns
+   * `{recipients:[{user_id,label,reason}], dispatched:<int>,
+   * deep_link:"<url>", kind:"<kind>"}`.
+   */
+  async callHuman(
+    eventId: number,
+    kind: 'input' | 'review' | 'stuck',
+    desc: string,
+  ): Promise<unknown> {
+    if (!['input', 'review', 'stuck'].includes(kind)) {
+      throw new Error(
+        `kind must be 'input' | 'review' | 'stuck', got ${JSON.stringify(kind)}`,
+      );
+    }
+    return this.call('call-human', {
+      event_id: Number(eventId),
+      kind,
+      desc,
+    });
+  }
+
   /** Hire schedules I posted (type 3) — the listings feed.
    *
    * Calls `get-my-jobs` (the wire name was reused for this semantic

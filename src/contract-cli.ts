@@ -198,6 +198,34 @@ export async function cmdContract(argv: string[]): Promise<number> {
         dump(await client.myJobs());
         return 0;
       }
+      case 'call-human': {
+        const eid = Number.parseInt(args.positional[0] ?? '', 10);
+        if (Number.isNaN(eid)) {
+          err('contract call-human: event_id required', 'args');
+          return 1;
+        }
+        const kind = flagStr(args, 'kind');
+        if (kind === undefined) {
+          err('contract call-human: --kind is required', 'args');
+          return 1;
+        }
+        if (!['input', 'review', 'stuck'].includes(kind)) {
+          err(
+            `contract call-human: --kind must be 'input' | 'review' | 'stuck', got ${JSON.stringify(kind)}`,
+            'args',
+          );
+          return 1;
+        }
+        const desc = flagStr(args, 'desc');
+        if (desc === undefined) {
+          err('contract call-human: --desc is required', 'args');
+          return 1;
+        }
+        dump(
+          await client.callHuman(eid, kind as 'input' | 'review' | 'stuck', desc),
+        );
+        return 0;
+      }
       case 'task': {
         const eid = Number.parseInt(args.positional[0] ?? '', 10);
         if (Number.isNaN(eid)) {

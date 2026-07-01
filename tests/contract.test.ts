@@ -13,7 +13,12 @@ import {
   type HttpResponse,
 } from '../src/contract.js';
 import { TimelogClient } from '../src/timelog.js';
-import { parseParticipantSpec } from '../src/contract-cli.js';
+import {
+  parseParticipantSpec,
+  cmdContract,
+  _setContractClientFactory,
+  _resetContractClientFactory,
+} from '../src/contract-cli.js';
 
 // ── HTTP mock ─────────────────────────────────────────────────────
 
@@ -675,5 +680,128 @@ describe('parseParticipantSpec', () => {
   });
   it('bad type rejected', () => {
     expect(() => parseParticipantSpec('robot:5:reviewer')).toThrow(/type/);
+  });
+});
+
+// ── call-human (task 4019) ────────────────────────────────────────
+
+describe('callHuman()', () => {
+  it('wires tool name "call-human" with {event_id, kind, desc}', async () => {
+    const { http, cap } = makeHttp({
+      body: mcpText({
+        recipients: [], dispatched: 0, deep_link: 'u', kind: 'stuck',
+      }),
+    });
+    const c = new ContractClient({ endpoint: 'http://x/mcp/agent', token: 't', http });
+    await c.callHuman(99, 'stuck', 'body');
+    const body = lastBody(cap);
+    expect((body.params as Record<string, unknown>).name).toBe('call-human');
+    expect(lastArgs(cap)).toEqual({ event_id: 99, kind: 'stuck', desc: 'body' });
+  });
+
+  it('rejects kinds outside the enum', async () => {
+    const c = new ContractClient({ endpoint: 'http://x/mcp/agent', token: 't' });
+    await expect(
+      c.callHuman(99, 'urgent' as unknown as 'stuck', 'body'),
+    ).rejects.toThrow(/kind must be/);
+    await expect(
+      c.callHuman(99, '' as unknown as 'stuck', 'body'),
+    ).rejects.toThrow(/kind must be/);
+  });
+});
+
+describe('CLI: contract call-human', () => {
+  afterEach(() => {
+    _resetContractClientFactory();
+  });
+
+  it('parses positional event_id + --kind + --desc and dispatches to client.callHuman', async () => {
+    const captured: {
+      eid?: number;
+      kind?: string;
+      desc?: string;
+    } = {};
+    const fake = {
+      async callHuman(eid: number, kind: string, desc: string) {
+        captured.eid = eid;
+        captured.kind = kind;
+        captured.desc = desc;
+        return {
+          recipients: [{ user_id: 1, label: 'L', reason: 'R' }],
+          dispatched: 1,
+          deep_link: 'https://ex/e/42',
+          kind: 'review',
+        };
+      },
+    } as unknown as ContractClient;
+    _setContractClientFactory(() => fake);
+
+    const rc = await cmdContract([
+      'call-human', '42', '--kind', 'review', '--desc', 'why',
+    ]);
+    expect(rc).toBe(0);
+    expect(captured).toEqual({ eid: 42, kind: 'review', desc: 'why' });
+  });
+
+  it('missing --kind fails with rc=1 and does not touch client', async () => {
+    let called = false;
+    _setContractClientFactory(
+      () => ({
+        async callHuman() {
+          called = true;
+          return {};
+        },
+      }) as unknown as ContractClient,
+    );
+    const rc = await cmdContract(['call-human', '42', '--desc', 'why']);
+    expect(rc).toBe(1);
+    expect(called).toBe(false);
+  });
+
+  it('missing --desc fails with rc=1 and does not touch client', async () => {
+    let called = false;
+    _setContractClientFactory(
+      () => ({
+        async callHuman() {
+          called = true;
+          return {};
+        },
+      }) as unknown as ContractClient,
+    );
+    const rc = await cmdContract(['call-human', '42', '--kind', 'review']);
+    expect(rc).toBe(1);
+    expect(called).toBe(false);
+  });
+
+  it('missing event_id fails with rc=1', async () => {
+    let called = false;
+    _setContractClientFactory(
+      () => ({
+        async callHuman() {
+          called = true;
+          return {};
+        },
+      }) as unknown as ContractClient,
+    );
+    const rc = await cmdContract(['call-human', '--kind', 'review', '--desc', 'why']);
+    expect(rc).toBe(1);
+    expect(called).toBe(false);
+  });
+
+  it('bad --kind is rejected client-side (does not reach the wire)', async () => {
+    let called = false;
+    _setContractClientFactory(
+      () => ({
+        async callHuman() {
+          called = true;
+          return {};
+        },
+      }) as unknown as ContractClient,
+    );
+    const rc = await cmdContract([
+      'call-human', '42', '--kind', 'urgent', '--desc', 'why',
+    ]);
+    expect(rc).toBe(1);
+    expect(called).toBe(false);
   });
 });
