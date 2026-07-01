@@ -17,6 +17,17 @@ interface PendingCdp {
   timer: ReturnType<typeof setTimeout>;
 }
 
+// task 4109 — anti-detect branching for Browser.type().
+// When both gates pass, a long text-with-selector call routes through the
+// real system-clipboard Ctrl+V path (from task 4098) instead of the per-key
+// Ceki.typeText path. Perfect per-key rhythm on a long string is a classic
+// bot signal; a paste event with inputType=insertFromPaste looks like the
+// normal "user pasted from clipboard" behavior. Named constants live at
+// module scope (not inside the method) so tests can pin them and future
+// tuning does not leave magic numbers in two places. Exported for tests.
+export const TYPE_PASTE_MIN_CHARS = 500;
+export const TYPE_PASTE_PROBABILITY = 0.625;
+
 type EventHandler = (method: string, params: Record<string, unknown>) => void;
 type TabHandler = (url: string) => void;
 type VoidHandler = () => void;
@@ -205,11 +216,36 @@ export class Browser {
     }
   }
 
-  async type(text: string, opts?: { human?: boolean }): Promise<void> {
+  async type(text: string, opts?: { human?: boolean; selector?: string }): Promise<void> {
     // task 413 — typing humanizer moved into the extension. The SDK now
     // sends ONE Ceki.typeText command instead of N per-char dispatchKey
     // events, so long inputs no longer burn through the 500 cmd / 60s
     // relay cap and the inter-key delays land without WS jitter.
+    //
+    // task 4109 — anti-detect branching. For LONG text delivered into a
+    // KNOWN selector, roll the dice against TYPE_PASTE_PROBABILITY and (if
+    // the gate opens) route through the real-clipboard Ctrl+V path from
+    // task 4098 instead of Ceki.typeText. Reasons this branch is gated on
+    // both `selector` and length:
+    //   - no selector => we don't know where to focus for the OS paste,
+    //     so the per-char path (which types into current focus) is the
+    //     only sane fallback;
+    //   - short text has no rhythm-signature problem to begin with, and
+    //     paste-events on short strings look weirder than per-key ones.
+    // Humanizer before/after hooks still run around the paste path.
+    const selector = opts?.selector;
+    if (
+      selector !== undefined
+      && text.length > TYPE_PASTE_MIN_CHARS
+      && Math.random() < TYPE_PASTE_PROBABILITY
+    ) {
+      const hPre = this._humanizeForCall(opts?.human);
+      if (hPre) await hPre.before('type');
+      await this._hotkeyPasteInto(selector, text);
+      if (hPre) await hPre.after('type');
+      return;
+    }
+
     const h = this._humanizeForCall(opts?.human);
     if (h) {
       await h.before('type');
@@ -232,7 +268,9 @@ export class Browser {
     const human = h
       ? (['natural', 'careful'].includes(h.profile.name) ? h.profile.name : 'natural')
       : null;
-    await this.send({ method: 'Ceki.typeText', params: { text, human } });
+    const params: Record<string, unknown> = { text, human };
+    if (selector !== undefined) params.selector = selector;
+    await this.send({ method: 'Ceki.typeText', params });
 
     if (h) {
       await h.after('type');
@@ -455,7 +493,25 @@ export class Browser {
    * @param text Arbitrary string to paste. Empty string is allowed; it seeds
    *   an empty clipboard and Ctrl+V still fires the `paste` event.
    */
-  async paste(selector: string, text: string): Promise<void> {
+  /**
+   * Real system-clipboard paste of `text` into `selector`.
+   *
+   * Shared 6-CDP-call sequence (from task 4098):
+   *   1. Runtime.evaluate — build offscreen `<textarea>`, set value, focus+select
+   *   2. Input.dispatchKeyEvent keyDown `c` (Ctrl+C — flips OS clipboard)
+   *   3. Input.dispatchKeyEvent keyUp   `c`
+   *   4. Runtime.evaluate — remove temp element, focus target selector
+   *   5. Input.dispatchKeyEvent keyDown `v` (Ctrl+V — fires paste event)
+   *   6. Input.dispatchKeyEvent keyUp   `v`
+   *
+   * Both `selector` and `text` are JSON-escaped when interpolated — quotes,
+   * backticks, backslashes, newlines, and unicode are safe.
+   *
+   * Called by {@link paste} (public API) and {@link type} (task 4109
+   * anti-detect branch for long text). Extracting keeps the two callers
+   * wire-identical.
+   */
+  private async _hotkeyPasteInto(selector: string, text: string): Promise<void> {
     const textLit = JSON.stringify(text);
     const seedExpr =
       "(function(){" +
@@ -485,6 +541,10 @@ export class Browser {
       params: { expression: cleanupFocusExpr },
     });
     await this._dispatchHotkey('v', 'KeyV');
+  }
+
+  async paste(selector: string, text: string): Promise<void> {
+    await this._hotkeyPasteInto(selector, text);
   }
 
   async switchTab(): Promise<void> {
