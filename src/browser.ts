@@ -381,11 +381,48 @@ export class Browser {
   }
 
   /**
-   * Return the text of the current window selection.
+   * Dispatch a `Ctrl+<key>` hotkey as `keyDown`+`keyUp` via CDP.
    *
-   * Uses `Runtime.evaluate` with `window.getSelection().toString()`. Does NOT
-   * touch the OS clipboard (no `navigator.clipboard` — not in the main-mode CDP
-   * allowlist). Returns `""` when nothing is selected.
+   * `modifiers=2` is Chromium's bitmask for Control. Both `keyDown` and `keyUp`
+   * are required because the browser's clipboard shortcuts only trigger on a
+   * full press cycle. Shared by `copy()` (Ctrl+C) and `paste()` (Ctrl+C on the
+   * seed textarea, Ctrl+V on the target).
+   */
+  private async _dispatchHotkey(key: string, code: string): Promise<void> {
+    const vk = key.toUpperCase().charCodeAt(0);
+    const base = {
+      modifiers: 2,
+      key,
+      code,
+      windowsVirtualKeyCode: vk,
+      nativeVirtualKeyCode: vk,
+    };
+    await this.send({
+      method: 'Input.dispatchKeyEvent',
+      params: { type: 'keyDown', ...base },
+    });
+    await this.send({
+      method: 'Input.dispatchKeyEvent',
+      params: { type: 'keyUp', ...base },
+    });
+  }
+
+  /**
+   * Copy the current window selection into the OS clipboard, return it.
+   *
+   * Reads the selection via `Runtime.evaluate` (`window.getSelection().toString()`)
+   * so the caller still gets a return value, then dispatches a synthetic
+   * `Ctrl+C` via `Input.dispatchKeyEvent` — that is the step that actually
+   * flips the OS clipboard. Verified against real headed Chromium in contract
+   * task 4098.
+   *
+   * We read the selection before Ctrl+C rather than reading it back from the
+   * clipboard because the main-mode CDP allowlist forbids `navigator.clipboard`
+   * and `document.execCommand('paste')` is dead in modern Chromium, so no JS
+   * read-back path exists. Reading the selection directly is cheap and exact.
+   *
+   * @returns The selection text (`""` when nothing is selected). The OS
+   * clipboard is flipped as a side effect regardless of the return.
    */
   async copy(): Promise<string> {
     const res = await this.send({
@@ -394,30 +431,60 @@ export class Browser {
     }) as Record<string, unknown>;
     const resultObj = res?.result as Record<string, unknown> | undefined;
     const v = resultObj?.value;
-    return typeof v === 'string' ? v : '';
+    const selection = typeof v === 'string' ? v : '';
+    await this._dispatchHotkey('c', 'KeyC');
+    return selection;
   }
 
   /**
-   * Focus the element matching `selector` and insert `text` via CDP.
+   * Put `text` into the OS clipboard, focus `selector`, then Ctrl+V it in.
    *
-   * Runs `document.querySelector(<selector>).focus()` through `Runtime.evaluate`,
-   * then dispatches `Input.insertText`. `insertText` fires real
-   * `input`/`beforeinput` events, so controlled React/Vue inputs pick up the
-   * update.
+   * Real system-clipboard paste: a temporary offscreen `<textarea>` is created
+   * and selected, then a synthetic `Ctrl+C` flips the OS clipboard to `text`.
+   * The temp element is removed, the target element is focused, and a synthetic
+   * `Ctrl+V` fires — which dispatches a real `ClipboardEvent` (the `paste`
+   * handler plus an `input` event with `inputType='insertFromPaste'`).
+   * Verified against real headed Chromium in contract task 4098.
    *
-   * `selector` is JSON-escaped, so quotes / backticks / newlines / unicode in
-   * the selector are safe. `text` goes to the CDP param verbatim.
+   * Both `selector` and `text` are JSON-escaped when interpolated into the
+   * `Runtime.evaluate` expression — quotes, backticks, backslashes, newlines,
+   * and unicode are safe.
+   *
+   * @param selector CSS selector for the target input / textarea /
+   *   contentEditable / any focusable element.
+   * @param text Arbitrary string to paste. Empty string is allowed; it seeds
+   *   an empty clipboard and Ctrl+V still fires the `paste` event.
    */
   async paste(selector: string, text: string): Promise<void> {
-    const focusExpr = `document.querySelector(${JSON.stringify(selector)}).focus()`;
+    const textLit = JSON.stringify(text);
+    const seedExpr =
+      "(function(){" +
+      "var __ceki_tmp__=document.createElement('textarea');" +
+      "__ceki_tmp__.id='__ceki_paste_tmp__';" +
+      "__ceki_tmp__.style.cssText='position:fixed;left:-9999px;top:0;opacity:0';" +
+      `__ceki_tmp__.value=${textLit};` +
+      "document.body.appendChild(__ceki_tmp__);" +
+      "__ceki_tmp__.focus();__ceki_tmp__.select();" +
+      "})()";
     await this.send({
       method: 'Runtime.evaluate',
-      params: { expression: focusExpr },
+      params: { expression: seedExpr },
     });
+    await this._dispatchHotkey('c', 'KeyC');
+
+    const selectorLit = JSON.stringify(selector);
+    const cleanupFocusExpr =
+      "(function(){" +
+      "var t=document.getElementById('__ceki_paste_tmp__');" +
+      "if(t)t.remove();" +
+      `var el=document.querySelector(${selectorLit});` +
+      "el.focus();" +
+      "})()";
     await this.send({
-      method: 'Input.insertText',
-      params: { text },
+      method: 'Runtime.evaluate',
+      params: { expression: cleanupFocusExpr },
     });
+    await this._dispatchHotkey('v', 'KeyV');
   }
 
   async switchTab(): Promise<void> {
