@@ -650,6 +650,7 @@ Commands:
                        [--reviewer agent:N|user:N] [--qa agent:N|user:N]
                        [--participant agent:N:reviewer|user:N:qa|agent:N:role:NUM]...
                        [--desc text] [--data JSON]
+                       [--tags key[:label[:color]],...]
   contract comment <eid> [--label X] [--type N] [--status N] [--start S]
                           [--end E] [--date D] [--duration N] [--amount N]
                           [--currency C] [--benefitable agent:N] [--desc text]

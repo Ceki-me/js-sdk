@@ -15,6 +15,7 @@ import {
 import { TimelogClient } from '../src/timelog.js';
 import {
   parseParticipantSpec,
+  parseTagsSpec,
   cmdContract,
   _setContractClientFactory,
   _resetContractClientFactory,
@@ -264,6 +265,58 @@ describe('create()', () => {
     expect(a.timezone).toBe('Europe/Moscow');
     expect(a.data).toEqual({ foo: 'bar' });
     expect(a.start).toBe('2026-06-20 10:00:00');
+  });
+  it('emits tags under settings.tags[]', async () => {
+    const { http, cap } = makeHttp({ body: mcpText({ id: 6 }) });
+    const c = new ContractClient({ endpoint: 'http://x/mcp/agent', token: 't', http });
+    await c.create(14, {
+      label: 'L',
+      tags: [
+        { key: 'backend', label: 'Backend', color: '#ff0000' },
+        { key: 'urgent' },
+      ],
+    });
+    expect(lastArgs(cap).settings).toEqual({
+      tags: [
+        { key: 'backend', label: 'Backend', color: '#ff0000' },
+        { key: 'urgent' },
+      ],
+    });
+  });
+  it('omits settings when no tags', async () => {
+    const { http, cap } = makeHttp({ body: mcpText({ id: 7 }) });
+    const c = new ContractClient({ endpoint: 'http://x/mcp/agent', token: 't', http });
+    await c.create(14, { label: 'L' });
+    expect('settings' in lastArgs(cap)).toBe(false);
+  });
+});
+
+describe('parseTagsSpec', () => {
+  it('bare comma-separated keys', () => {
+    expect(parseTagsSpec('backend,urgent')).toEqual([
+      { key: 'backend' },
+      { key: 'urgent' },
+    ]);
+  });
+  it('key:label:color', () => {
+    expect(parseTagsSpec('backend:Backend:#ff0000')).toEqual([
+      { key: 'backend', label: 'Backend', color: '#ff0000' },
+    ]);
+  });
+  it('empty label skipped (key::#color)', () => {
+    expect(parseTagsSpec('docs::#0af')).toEqual([{ key: 'docs', color: '#0af' }]);
+  });
+  it('trims and ignores blank items', () => {
+    expect(parseTagsSpec(' backend , , qa ')).toEqual([
+      { key: 'backend' },
+      { key: 'qa' },
+    ]);
+  });
+  it('throws when an item has no key', () => {
+    expect(() => parseTagsSpec(':nope')).toThrow();
+  });
+  it('throws when nothing parses', () => {
+    expect(() => parseTagsSpec(' , , ')).toThrow();
   });
 });
 

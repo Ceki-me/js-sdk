@@ -7,6 +7,7 @@ import {
   ROLE_REVIEWER,
   contractIdsFromEnv,
   type ParticipantSpec,
+  type TagSpec,
 } from './contract.js';
 import { TimelogClient } from './timelog.js';
 
@@ -60,6 +61,36 @@ export function parseParticipantSpec(spec: string): ParticipantSpec {
     );
   }
   return { participable_id: value, type: ptype, role_id: roleId };
+}
+
+/**
+ * Parse the `--tags` sugar into settings.tags[] elements. Comma-separated;
+ * each item is `key[:label[:color]]`:
+ *   backend,urgent           -> [{key:backend},{key:urgent}]
+ *   backend:Backend:#ff0000  -> [{key:backend,label:Backend,color:#ff0000}]
+ *   docs::#0af               -> [{key:docs,color:#0af}]   (empty label skipped)
+ */
+export function parseTagsSpec(spec: string): TagSpec[] {
+  const tags: TagSpec[] = [];
+  for (const raw of spec.split(',')) {
+    const item = raw.trim();
+    if (!item) continue;
+    const idx = item.indexOf(':');
+    const key = (idx === -1 ? item : item.slice(0, idx)).trim();
+    if (!key) throw new Error(`--tags item needs a key, got: ${JSON.stringify(raw)}`);
+    const tag: TagSpec = { key };
+    if (idx !== -1) {
+      const tail = item.slice(idx + 1);
+      const ci = tail.indexOf(':');
+      const label = (ci === -1 ? tail : tail.slice(0, ci)).trim();
+      const color = ci === -1 ? '' : tail.slice(ci + 1).trim();
+      if (label) tag.label = label;
+      if (color) tag.color = color;
+    }
+    tags.push(tag);
+  }
+  if (tags.length === 0) throw new Error(`--tags produced no tags from: ${JSON.stringify(spec)}`);
+  return tags;
 }
 
 // ── tiny argv parser (no commander) — matches python argparse semantics ──
@@ -274,8 +305,11 @@ export async function cmdContract(argv: string[]): Promise<number> {
         const dataRaw = flagStr(args, 'data');
         const dataObj = dataRaw ? JSON.parse(dataRaw) : undefined;
         let extras: ParticipantSpec[] = [];
+        let tags: TagSpec[] | undefined;
         try {
           extras = flagList(args, 'participant').map(parseParticipantSpec);
+          const tagsRaw = flagStr(args, 'tags');
+          if (tagsRaw) tags = parseTagsSpec(tagsRaw);
         } catch (e) {
           err((e as Error).message, 'args');
           return 1;
@@ -299,6 +333,7 @@ export async function cmdContract(argv: string[]): Promise<number> {
             reviewer: flagStr(args, 'reviewer'),
             qa: flagStr(args, 'qa'),
             participants: extras.length > 0 ? extras : undefined,
+            tags,
           }),
         );
         return 0;
