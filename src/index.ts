@@ -55,6 +55,8 @@ export {
 export type {
   Benefitable,
   ParticipantSpec,
+  TagSpec,
+  ContractSettings,
   ContractClientOptions,
   CreateOptions,
   CommentOptions,

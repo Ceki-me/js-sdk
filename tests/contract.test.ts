@@ -360,6 +360,39 @@ describe('propose()', () => {
     expect(a.end).toBe('e');
     expect(a.date).toBe('2026-06-18');
   });
+  it('forwards settings.tags verbatim (ev 2796 / 2807)', async () => {
+    const { http, cap } = makeHttp({ body: mcpText({}) });
+    const c = new ContractClient({ endpoint: 'http://x/mcp/agent', token: 't', http });
+    await c.propose(7, {
+      status: 222,
+      settings: {
+        tags: [
+          { key: 'backend' },
+          { key: 'ui', label: 'UI' },
+          { key: 'bug', label: 'Bug', color: 'red' },
+        ],
+        reply_to: 42,
+        blocked_by: [9, 10],
+        do_after: '2026-07-04T00:00:00Z',
+      },
+    });
+    expect(lastArgs(cap).settings).toEqual({
+      tags: [
+        { key: 'backend' },
+        { key: 'ui', label: 'UI' },
+        { key: 'bug', label: 'Bug', color: 'red' },
+      ],
+      reply_to: 42,
+      blocked_by: [9, 10],
+      do_after: '2026-07-04T00:00:00Z',
+    });
+  });
+  it('omits settings when not supplied', async () => {
+    const { http, cap } = makeHttp({ body: mcpText({}) });
+    const c = new ContractClient({ endpoint: 'http://x/mcp/agent', token: 't', http });
+    await c.propose(7, { status: 222 });
+    expect('settings' in lastArgs(cap)).toBe(false);
+  });
 });
 
 describe('vote()', () => {
