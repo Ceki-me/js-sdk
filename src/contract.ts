@@ -13,6 +13,13 @@ export type ParticipantSpec = {
   role_id: number;
 };
 
+/** Project tag element persisted under events.settings.tags[] (back/3165). */
+export type TagSpec = {
+  key: string;
+  label?: string;
+  color?: string;
+};
+
 export class ContractError extends Error {
   constructor(message: string) {
     super(message);
@@ -228,6 +235,8 @@ export type CreateOptions = {
   reviewer?: string;
   qa?: string;
   participants?: ParticipantSpec[];
+  /** Sugar for settings.tags[] — {key, label?, color?} project tags. */
+  tags?: TagSpec[];
 };
 
 export type CommentOptions = {
@@ -447,6 +456,9 @@ export class ContractClient {
       data: opts.data,
       benefitable: opts.benefitable !== undefined ? parseBenefitable(opts.benefitable) : undefined,
       users: users.length > 0 ? users : undefined,
+      // back/3165: project tags live in events.settings.tags[]. `tags` is
+      // SDK/CLI sugar — emitted on the wire under the `settings` blob.
+      settings: opts.tags && opts.tags.length ? { tags: opts.tags } : undefined,
     });
     return this.call(TOOL_MAP.create, args as Record<string, unknown>);
   }
