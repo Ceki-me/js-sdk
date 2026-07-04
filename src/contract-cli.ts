@@ -8,6 +8,7 @@ import {
   contractIdsFromEnv,
   type ParticipantSpec,
   type TagSpec,
+  type ContractSettings,
 } from './contract.js';
 import { TimelogClient } from './timelog.js';
 
@@ -367,6 +368,19 @@ export async function cmdContract(argv: string[]): Promise<number> {
           err('contract propose: eid required', 'args');
           return 1;
         }
+        // 2807: --tags <key[:label[:color]]> (repeatable, also
+        // comma-separated within each flag) → settings.tags[] on the wire.
+        const tagsEntries = flagList(args, 'tags');
+        let settings: ContractSettings | undefined;
+        if (tagsEntries.length > 0) {
+          try {
+            const tags = parseTagsSpec(tagsEntries.join(','));
+            settings = { tags };
+          } catch (e) {
+            err((e as Error).message, 'args');
+            return 1;
+          }
+        }
         dump(
           await client.propose(eid, {
             status: flagInt(args, 'status'),
@@ -379,6 +393,7 @@ export async function cmdContract(argv: string[]): Promise<number> {
             amount: flagInt(args, 'amount'),
             currency: flagStr(args, 'currency'),
             benefitable: flagStr(args, 'benefitable'),
+            settings,
           }),
         );
         return 0;

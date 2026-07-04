@@ -20,6 +20,22 @@ export type TagSpec = {
   color?: string;
 };
 
+/**
+ * Settings blob forwarded verbatim into propose-correction arguments
+ * (and create-contract-event). Carries tags, the dependency graph
+ * (reply_to / blocked_by / do_after) that the backend (ev 2796 c46)
+ * persists onto the event's `settings` column.
+ */
+export type ContractSettings = {
+  tags?: TagSpec[];
+  /** event id this correction replies to. */
+  reply_to?: number;
+  /** event ids that must resolve before this one. */
+  blocked_by?: number[];
+  /** ISO datetime — do not start until this timestamp passes. */
+  do_after?: string;
+};
+
 export class ContractError extends Error {
   constructor(message: string) {
     super(message);
@@ -264,6 +280,9 @@ export type ProposeOptions = {
   amount?: number;
   currency?: string;
   benefitable?: string;
+  /** Settings blob (tags, reply_to, blocked_by, do_after) — forwarded
+   *  verbatim into the propose-correction wire payload. 2807 / ev 2796. */
+  settings?: ContractSettings;
 };
 
 export type ProgressOptions = {
@@ -494,6 +513,9 @@ export class ContractClient {
       amount: opts.amount,
       currency: opts.currency,
       benefitable: opts.benefitable !== undefined ? parseBenefitable(opts.benefitable) : undefined,
+      // 2807: settings (tags, reply_to, blocked_by, do_after) forwarded
+      // verbatim. Backend ev 2796 c46 persists onto events.settings.
+      settings: opts.settings,
     });
     return this.call(TOOL_MAP.propose, args as Record<string, unknown>);
   }
@@ -552,5 +574,22 @@ export class ContractClient {
       }
     }
     return [];
+  }
+
+  /**
+   * Long-poll loop. Calls `poll()` every `seconds` (clamped to >= 6 — the
+   * backend rate-limit is 10/min/token) and invokes `cb` with non-empty
+   * batches. Runs until the caller aborts the process / kills the timer.
+   */
+  async watch(
+    seconds: number,
+    cb?: (notifications: unknown[]) => void | Promise<void>,
+  ): Promise<void> {
+    const interval = Math.max(6, Math.floor(seconds));
+    for (;;) {
+      const items = await this.poll();
+      if (items.length > 0 && cb) await cb(items);
+      await new Promise((r) => setTimeout(r, interval * 1000));
+    }
   }
 }

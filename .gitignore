@@ -3,3 +3,7 @@ dist/
 .env
 *.tgz
 tests/real-e2e/reports/
+
+# graphify knowledge-graph artifacts
+.graphifyignore
+graphify-out/
