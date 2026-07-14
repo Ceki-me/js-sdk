@@ -121,9 +121,9 @@ export function splitLabelDesc(
     return lbl ? { label: lbl, description: undefined } : { label: text, description: undefined };
   }
 
-  // Text > 1024 — split at word boundary
-  const splitAt = Math.max(1, text.lastIndexOf(' ', MAX_LABEL_LENGTH));
-  const effectiveSplit = splitAt <= 0 ? MAX_LABEL_LENGTH : splitAt;
+  // Text > 1024 — split at word boundary (mirrors python word_boundary)
+  const splitAt = text.lastIndexOf(' ', MAX_LABEL_LENGTH);
+  const effectiveSplit = splitAt > 0 ? splitAt : MAX_LABEL_LENGTH;
   const first = text.slice(0, effectiveSplit);
   const rest = text.slice(effectiveSplit).trim() || undefined;
 
