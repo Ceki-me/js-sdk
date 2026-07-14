@@ -91,6 +91,45 @@ export function cleanArgs<T extends Record<string, unknown>>(o: T): Partial<T> {
   return out as Partial<T>;
 }
 
+const MAX_LABEL_LENGTH = 1024;
+
+/** Split long label/description at word boundary (max 1024 chars for label).
+ *
+ * Mirrors python-sdk _split_label_desc().
+ * - Both None → (None, None)
+ * - Only label, ≤1024 → (label, None)
+ * - Only label, >1024 → split at word boundary → (first part, rest as description)
+ * - Only description → if ≤1024 becomes label with no description, else split
+ * - Both set → as-is
+ */
+export function splitLabelDesc(
+  label: string | null | undefined,
+  description: string | null | undefined,
+): { label: string | undefined; description: string | undefined } {
+  const lbl = label ?? undefined;
+  const desc = description ?? undefined;
+
+  if (!lbl && !desc) return { label: undefined, description: undefined };
+
+  // Both set — use as-is
+  if (lbl && desc) return { label: lbl, description: desc };
+
+  const text = (lbl ?? desc)!;
+
+  if (text.length <= MAX_LABEL_LENGTH) {
+    // Only description → becomes label (no desc). Only label, short → as-is.
+    return lbl ? { label: lbl, description: undefined } : { label: text, description: undefined };
+  }
+
+  // Text > 1024 — split at word boundary
+  const splitAt = Math.max(1, text.lastIndexOf(' ', MAX_LABEL_LENGTH));
+  const effectiveSplit = splitAt <= 0 ? MAX_LABEL_LENGTH : splitAt;
+  const first = text.slice(0, effectiveSplit);
+  const rest = text.slice(effectiveSplit).trim() || undefined;
+
+  return { label: first, description: rest };
+}
+
 /** Derive a short (<=60 char) label from a desc's first non-empty line. */
 export function deriveLabel(desc: string | null | undefined): string {
   if (!desc) return 'progress';
@@ -483,9 +522,10 @@ export class ContractClient {
   }
 
   async comment(eventId: number, opts: CommentOptions = {}): Promise<unknown> {
+    const { label, description } = splitLabelDesc(opts.label, opts.description);
     const args = cleanArgs({
       event_id: Number(eventId),
-      label: opts.label,
+      label,
       type_id: opts.type,
       status_id: opts.status,
       start: opts.start,
@@ -494,18 +534,19 @@ export class ContractClient {
       duration: opts.duration,
       amount: opts.amount,
       currency: opts.currency,
-      description: opts.description,
+      description,
       benefitable: opts.benefitable !== undefined ? parseBenefitable(opts.benefitable) : undefined,
     });
     return this.call(TOOL_MAP.comment, args as Record<string, unknown>);
   }
 
   async propose(eventId: number, opts: ProposeOptions = {}): Promise<unknown> {
+    const { label, description } = splitLabelDesc(opts.label, opts.description);
     const args = cleanArgs({
       event_id: Number(eventId),
       status_id: opts.status,
-      label: opts.label,
-      description: opts.description,
+      label,
+      description,
       start: opts.start,
       end: opts.end,
       date: opts.date,
