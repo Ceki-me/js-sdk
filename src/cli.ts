@@ -18,7 +18,7 @@ import { saveSession, loadSession, deleteSession, getLastSeenTs, updateLastSeenT
 import type { ConnectOptions, ChatMessage } from './types.js';
 import type { Client } from './client.js';
 import type { Browser } from './browser.js';
-import { cmdContract, cmdTimelog } from './contract-cli.js';
+import { cmdContract, cmdHire, cmdTimelog } from './contract-cli.js';
 
 function out(data: unknown): void {
   process.stdout.write(JSON.stringify(data) + '\n');
@@ -638,7 +638,6 @@ Commands:
   contract members <cid>
   contract tasks [cid]                (default: CEKI_CONTRACT_IDS)
   contract my-events                  (get-my-events — contract events assigned to me; the plate feed)
-  contract my-jobs                    (get-my-jobs   — hire schedules I posted, type 3; the listings feed)
   contract call-human <eid> --kind input|review|stuck --desc "..."
   contract task <eid>
   contract children <eid>
@@ -667,6 +666,8 @@ Commands:
   timelog start <event_id>
   timelog stop <event_id> [--label TEXT]
   timelog check <event_id>
+
+  hire my-jobs                        (get-my-jobs — hire schedules I posted, type 3)
 
 Environment:
   CEKI_API_KEY (required)
@@ -707,6 +708,9 @@ async function main(): Promise<void> {
 
   if (command === 'contract') {
     process.exit(await cmdContract(rest));
+  }
+  if (command === 'hire') {
+    process.exit(await cmdHire(rest));
   }
   if (command === 'timelog') {
     process.exit(await cmdTimelog(rest));

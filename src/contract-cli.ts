@@ -227,6 +227,7 @@ export async function cmdContract(argv: string[]): Promise<number> {
         return 0;
       }
       case 'my-jobs': {
+        process.stderr.write('⚠️  [DEPRECATED] use `ceki hire my-jobs` instead\n');
         dump(await client.myJobs());
         return 0;
       }
@@ -532,6 +533,37 @@ export async function cmdTimelog(argv: string[]): Promise<number> {
   } catch (e) {
     if (e instanceof ContractError) {
       err(e.message, 'timelog');
+      return 1;
+    }
+    err((e as Error).message ?? String(e), 'error');
+    return 1;
+  }
+}
+
+export async function cmdHire(argv: string[]): Promise<number> {
+  const action = argv[0];
+  if (!action) {
+    err('hire: subcommand required', 'args');
+    return 1;
+  }
+  const rest = argv.slice(1);
+  const args = parseArgs(rest);
+  const client = contractClientFactory();
+
+  try {
+    switch (action) {
+      case 'my-jobs': {
+        dump(await client.myJobs());
+        return 0;
+      }
+      default: {
+        err(`unknown hire action: ${action}`, 'args');
+        return 1;
+      }
+    }
+  } catch (e) {
+    if (e instanceof ContractError) {
+      err(e.message, 'contract');
       return 1;
     }
     err((e as Error).message ?? String(e), 'error');
