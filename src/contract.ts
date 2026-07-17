@@ -541,12 +541,14 @@ export class ContractClient {
   }
 
   async propose(eventId: number, opts: ProposeOptions = {}): Promise<unknown> {
-    const { label, description } = splitLabelDesc(opts.label, opts.description);
+    // propose is a correction/PATCH — label and description are independent
+    // fields. Do NOT use splitLabelDesc (which maps desc→label when label is
+    // absent) — that would make --desc set the label instead of description.
     const args = cleanArgs({
       event_id: Number(eventId),
       status_id: opts.status,
-      label,
-      description,
+      label: opts.label ?? undefined,
+      description: opts.description ?? undefined,
       start: opts.start,
       end: opts.end,
       date: opts.date,
