@@ -31,6 +31,16 @@ await browser.close();
 await client.close();
 ```
 
+## Playwright / Puppeteer / Selenium Compatibility
+
+Ceki speaks raw **CDP (Chrome DevTools Protocol)** — the same protocol Playwright and Puppeteer use internally. Most automation scripts port with minimal changes:
+
+- **Playwright** — `page.context.newCDPSession(page)` → `client.rent()`, then replace `cdpSession.send('DOM.getDocument')` with `browser.send({ method: 'DOM.getDocument' })`. Navigation, clicking, typing, and DOM queries work identically.
+- **Puppeteer** — `page._client().send('DOM.getDocument')` → `browser.send({ method: 'DOM.getDocument' })`. Same CDP method names and params.
+- **Selenium** — `driver.execute_cdp_cmd('DOM.getDocument', {})` → `browser.send({ method: 'DOM.getDocument' })` in Node.js, or use the [Python SDK](https://github.com/Ceki-me/python-sdk) with identical syntax.
+
+The `browser.send({ method, params })` method mirrors Playwright's `CDPSession.send()` — same method names, same parameter shapes. Most scripts need only import and connection changes.
+
 ## Environment Variables
 
 | Variable | Description |
