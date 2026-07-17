@@ -166,6 +166,7 @@ export class Client {
   async rent(scheduleId: number, opts?: RentOptions): Promise<Browser> {
     const rentMsg: Record<string, unknown> = { type: 'rent', browser_id: scheduleId };
     if (opts?.mode) rentMsg.mode = opts.mode;
+    if (opts?.pacingProfile) rentMsg.pacing_profile = opts.pacingProfile;
     this._wsSend(rentMsg);
 
     const key = `rent:${scheduleId}`;
