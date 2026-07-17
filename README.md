@@ -1,5 +1,7 @@
 # @ceki/sdk
 
+> **Using Playwright / Puppeteer / Selenium?** Ceki speaks the same CDP protocol — [see migration guide](#playwright--puppeteer--selenium-compatibility)
+
 TypeScript/Node.js SDK for [browser.ceki.me](https://browser.ceki.me) — rent real browsers from real people for AI agent automation.
 
 ## Install
@@ -33,13 +35,65 @@ await client.close();
 
 ## Playwright / Puppeteer / Selenium Compatibility
 
-Ceki speaks raw **CDP (Chrome DevTools Protocol)** — the same protocol Playwright and Puppeteer use internally. Most automation scripts port with minimal changes:
+Ceki speaks raw **CDP (Chrome DevTools Protocol)** — the same protocol Playwright and Puppeteer use internally. Most automation scripts port with just an import and connection change.
+
+### Why Ceki instead of your current stack?
+
+| Feature | Playwright | Puppeteer | Selenium | **Ceki** |
+|---|---|---|---|---|
+| Real residential IPs | ❌ | ❌ | ❌ | ✅ |
+| Human behavioral mimicry | ❌ | ❌ | ❌ | ✅ |
+| Captcha solving via chat | ❌ | ❌ | ❌ | ✅ |
+| Raw CDP access | ✅ | ✅ | Partial | ✅ native |
+| MCP-native | ❌ | ❌ | ❌ | ✅ |
+| Real human browser provider | ❌ | ❌ | ❌ | ✅ |
+| Zero bot detection risk | ❌ | ❌ | ❌ | ✅ |
+
+### Per-framework migration
 
 - **Playwright** — `page.context.newCDPSession(page)` → `client.rent()`, then replace `cdpSession.send('DOM.getDocument')` with `browser.send({ method: 'DOM.getDocument' })`. Navigation, clicking, typing, and DOM queries work identically.
 - **Puppeteer** — `page._client().send('DOM.getDocument')` → `browser.send({ method: 'DOM.getDocument' })`. Same CDP method names and params.
-- **Selenium** — `driver.execute_cdp_cmd('DOM.getDocument', {})` → `browser.send({ method: 'DOM.getDocument' })` in Node.js, or use the [Python SDK](https://github.com/Ceki-me/python-sdk) with identical syntax.
+- **Selenium** — `driver.execute_cdp_cmd('DOM.getDocument', {})` → `browser.send({ method: 'DOM.getDocument' })`. Same method names, same parameter shapes.
+- **MCP** — Ceki is MCP-native. Connect it as an MCP server (`npx @ceki/sdk mcp`), and any MCP client (Claude Code, Cline, Cursor) gets browser tools — navigate, click, type, screenshot, captcha chat — without writing a single line of CDP code.
 
-The `browser.send({ method, params })` method mirrors Playwright's `CDPSession.send()` — same method names, same parameter shapes. Most scripts need only import and connection changes.
+### Migration example: Playwright → Ceki
+
+<table>
+<tr><th>Playwright (raw CDP)</th><th>Ceki</th></tr>
+<tr><td>
+
+```typescript
+const browser = await pw.chromium.launch();
+const page = await browser.newPage();
+const cdp = await page.context()
+  .newCDPSession(page);
+await cdp.send('Page.navigate',
+  { url: 'https://x.com' });
+await page.click('text=Log in');
+const { data } = await cdp.send(
+  'Page.captureScreenshot');
+await browser.close();
+```
+
+</td><td>
+
+```typescript
+const client = await connect(API_KEY);
+const br = await client.rent(sid);
+await br.send({
+  method: 'Page.navigate',
+  params: { url: 'https://x.com' },
+});
+await br.click(320, 480);
+const snap = await br.screenshot();
+await br.close();
+await client.close();
+```
+
+</td></tr>
+</table>
+
+The `browser.send({ method, params })` method mirrors Playwright's `CDPSession.send()` — same CDP method names, same parameter shapes. Only the connection setup changes.
 
 ## Environment Variables
 
