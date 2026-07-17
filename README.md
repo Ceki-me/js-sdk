@@ -95,6 +95,15 @@ await client.close();
 
 The `browser.send({ method, params })` method mirrors Playwright's `CDPSession.send()` — same CDP method names, same parameter shapes. Only the connection setup changes.
 
+### Known Differences
+
+Ceki's CDP-over-WSS relay is not a direct local CDP pipe — a few differences to keep in mind when migrating from Playwright / Puppeteer / Selenium:
+
+- **No CSS selectors on interaction methods** — `click`, `type`, and `scroll` take viewport coordinates, not CSS selectors. For element-based selection, use `Runtime.evaluate` to get bounding rects, then pass coordinates.
+- **Speed** — each command travels over the WebSocket relay with ~50–200ms round-trip (internet-latency dependent, unlike local CDP which is sub-millisecond). Batch operations in a single `Runtime.evaluate` where possible, rather than chaining many small CDP calls.
+- **120s grace window** — after each command there's a 120s window before the session auto-closes. This is by design for workflow chaining, but long-running idle sessions will need a keepalive.
+- **Runtime.evaluate serialization** — CDP's `Runtime.evaluate` returns JSON-serializable values only. Functions, symbols, DOM nodes, and circular references are not transferable. Use `--returnByValue` explicitly.
+
 ## Environment Variables
 
 | Variable | Description |
