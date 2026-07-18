@@ -180,7 +180,19 @@ async function resolveTaskReviewer(
     return trimmed;
   }
 
-  if (trimmed !== 'creator' && trimmed !== 'owner') {
+  if (trimmed === 'creator') {
+    try {
+      const profile = await client.call('get-profile', {}) as Record<string, unknown>;
+      const id = profile['id'];
+      if (id != null) return `agent:${String(id)}`;
+    } catch {
+      throw new Error(
+        `TASK_REVIEWER=creator: failed to resolve current agent via get-profile`,
+      );
+    }
+  }
+
+  if (trimmed !== 'owner') {
     return trimmed; // pass through unknown value
   }
 
