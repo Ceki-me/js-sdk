@@ -697,7 +697,24 @@ export class ContractClient {
     if (!contract) {
       throw new ContractError(`Contract ${contractId} not found — cannot resolve "owner" marker`);
     }
-    const ownerId = Number(contract['owner_id']);
+    let ownerId = Number(contract['owner_id']);
+    if (!ownerId || Number.isNaN(ownerId)) {
+      // Fallback: parse data.users for role_id:1 entry
+      const contractData = contract['data'] as Record<string, unknown> | undefined;
+      if (contractData?.users) {
+        const users = contractData['users'] as Record<string, unknown>;
+        for (const key of Object.keys(users)) {
+          const entry = users[key] as Record<string, unknown>;
+          if (Number(entry['role_id']) === 1) {
+            const uid = Number(entry['user_id'] ?? entry['participable_id']);
+            if (uid) {
+              ownerId = uid;
+              break;
+            }
+          }
+        }
+      }
+    }
     if (!ownerId || Number.isNaN(ownerId)) {
       throw new ContractError(
         `Contract ${contractId} has no owner_id — cannot resolve "owner" marker`,

@@ -219,6 +219,20 @@ async function resolveTaskReviewer(
     return `${flatType}:${String(flatId)}`;
   }
 
+  // Fallback to data.users for role_id:1 entry (owner/creator)
+  const data = contract['data'] as Record<string, unknown> | undefined;
+  if (data?.users) {
+    const users = data['users'] as Record<string, unknown>;
+    for (const key of Object.keys(users)) {
+      const entry = users[key] as Record<string, unknown>;
+      if (Number(entry['role_id']) === 1) {
+        const ptype = String(entry['participable_type'] ?? 'user');
+        const uid = Number(entry['user_id'] ?? entry['participable_id']);
+        if (uid) return `${ptype}:${uid}`;
+      }
+    }
+  }
+
   throw new Error(
     `TASK_REVIEWER=${trimmed}: cannot resolve ${trimmed} for contract ${cid}`,
   );
