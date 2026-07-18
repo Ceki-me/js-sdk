@@ -156,6 +156,14 @@ describe('parseParticipant (helper)', () => {
     expect(p).not.toHaveProperty('participable_type');
     expect(p.type).toBe('agent');
   });
+  it('accepts creator marker with pass-through', () => {
+    const p = parseParticipant('creator', ROLE_REVIEWER)!;
+    expect(p).toEqual({ participable_id: 0, type: 'creator', role_id: 5 });
+  });
+  it('accepts owner marker with pass-through', () => {
+    const p = parseParticipant('owner', ROLE_QA)!;
+    expect(p).toEqual({ participable_id: 0, type: 'owner', role_id: 6 });
+  });
 });
 
 // ── env resolution ────────────────────────────────────────────────
@@ -414,6 +422,85 @@ describe('propose()', () => {
     const a = lastArgs(cap);
     expect(a.label).toBe('L');
     expect(a.description).toBe('D');
+  });
+  it('reviewer folds into users[] on propose', async () => {
+    const { http, cap } = makeHttp({ body: mcpText({}) });
+    const c = new ContractClient({ endpoint: 'http://x/mcp/agent', token: 't', http });
+    await c.propose(7, { reviewer: 'agent:9' });
+    const a = lastArgs(cap);
+    expect(a.users).toEqual([{ participable_id: 9, type: 'agent', role_id: 5 }]);
+    expect(a).not.toHaveProperty('reviewer');
+    expect(a).not.toHaveProperty('qa');
+    expect(a).not.toHaveProperty('participants');
+  });
+  it('qa folds into users[] on propose', async () => {
+    const { http, cap } = makeHttp({ body: mcpText({}) });
+    const c = new ContractClient({ endpoint: 'http://x/mcp/agent', token: 't', http });
+    await c.propose(7, { qa: 'user:42' });
+    const a = lastArgs(cap);
+    expect(a.users).toEqual([{ participable_id: 42, type: 'user', role_id: 6 }]);
+    expect(a).not.toHaveProperty('reviewer');
+    expect(a).not.toHaveProperty('qa');
+    expect(a).not.toHaveProperty('participants');
+  });
+  it('reviewer + qa both in users[] on propose', async () => {
+    const { http, cap } = makeHttp({ body: mcpText({}) });
+    const c = new ContractClient({ endpoint: 'http://x/mcp/agent', token: 't', http });
+    await c.propose(7, { reviewer: 'agent:9', qa: 'agent:12' });
+    const a = lastArgs(cap);
+    const users = a.users as Array<Record<string, unknown>>;
+    expect(users).toHaveLength(2);
+    const byRole = Object.fromEntries(users.map((p) => [p.role_id, p]));
+    expect(byRole[5]).toEqual({ participable_id: 9, type: 'agent', role_id: 5 });
+    expect(byRole[6]).toEqual({ participable_id: 12, type: 'agent', role_id: 6 });
+    expect(a).not.toHaveProperty('participants');
+  });
+  it('no reviewer/qa → no users key on propose', async () => {
+    const { http, cap } = makeHttp({ body: mcpText({}) });
+    const c = new ContractClient({ endpoint: 'http://x/mcp/agent', token: 't', http });
+    await c.propose(7, { label: 'L' });
+    const a = lastArgs(cap);
+    expect(a).not.toHaveProperty('users');
+    expect(a).not.toHaveProperty('reviewer');
+    expect(a).not.toHaveProperty('qa');
+  });
+  it('resolves creator marker via task() and includes in users[]', async () => {
+    // Two calls: first task() → {user_id: 5}, then propose()
+    const { http, cap } = makeHttp([
+      { body: mcpText({ user_id: 5 }) },
+      { body: mcpText({}) },
+    ]);
+    const c = new ContractClient({ endpoint: 'http://x/mcp/agent', token: 't', http });
+    await c.propose(7, { reviewer: 'creator' });
+    const a = lastArgs(cap);
+    expect(a.users).toEqual([{ participable_id: 5, type: 'user', role_id: 5 }]);
+    expect(a).toHaveProperty('event_id', 7);
+  });
+  it('resolves owner marker via task()+listContracts() and includes in users[]', async () => {
+    // Three calls: task() → {contract_id: 14}, listContracts() → [{id:14,owner_id:3}], propose()
+    const { http, cap } = makeHttp([
+      { body: mcpText({ contract_id: 14 }) },
+      { body: mcpText([{ id: 14, owner_id: 3 }]) },
+      { body: mcpText({}) },
+    ]);
+    const c = new ContractClient({ endpoint: 'http://x/mcp/agent', token: 't', http });
+    await c.propose(7, { reviewer: 'owner' });
+    const a = lastArgs(cap);
+    expect(a.users).toEqual([{ participable_id: 3, type: 'user', role_id: 5 }]);
+  });
+  it('reviewer + extra participant stack on users[] on propose', async () => {
+    const { http, cap } = makeHttp({ body: mcpText({}) });
+    const c = new ContractClient({ endpoint: 'http://x/mcp/agent', token: 't', http });
+    await c.propose(7, {
+      reviewer: 'agent:9',
+      participants: [{ participable_id: 5, type: 'agent', role_id: 5 }],
+    });
+    const a = lastArgs(cap);
+    const users = a.users as Array<Record<string, unknown>>;
+    expect(users).toHaveLength(2);
+    expect(users.every((p) => p.role_id === 5)).toBe(true);
+    expect(users.map((p) => p.participable_id).sort()).toEqual([5, 9]);
+    expect(a).not.toHaveProperty('participants');
   });
 });
 
