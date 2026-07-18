@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import { connect } from './client.js';
 import {
@@ -19,6 +20,34 @@ import type { ConnectOptions, ChatMessage } from './types.js';
 import type { Client } from './client.js';
 import type { Browser } from './browser.js';
 import { cmdContract, cmdHire, cmdTimelog } from './contract-cli.js';
+
+/** Load ~/.ceki/config KEY=VALUE lines into process.env (env wins). Silently skip if missing. */
+function loadConfig(): void {
+  const configPath = path.join(os.homedir(), '.ceki', 'config');
+  let content: string;
+  try {
+    content = fs.readFileSync(configPath, 'utf-8');
+  } catch {
+    return; // silently skip if file doesn't exist or can't be read
+  }
+  for (const rawLine of content.split('\n')) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#')) continue;
+    const eqIdx = line.indexOf('=');
+    if (eqIdx === -1) continue;
+    const key = line.slice(0, eqIdx).trim();
+    let value = line.slice(eqIdx + 1).trim();
+    if (!key) continue;
+    // Strip surrounding quotes
+    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+      value = value.slice(1, -1);
+    }
+    // env wins: only set if not already defined
+    if (process.env[key] === undefined) {
+      process.env[key] = value;
+    }
+  }
+}
 
 function out(data: unknown): void {
   process.stdout.write(JSON.stringify(data) + '\n');
@@ -646,7 +675,7 @@ Commands:
                        [--start S] [--end E] [--timezone TZ] [--date D]
                        [--duration N] [--amount N] [--currency C]
                        [--benefitable agent:N|user:N]
-                       [--reviewer agent:N|user:N] [--qa agent:N|user:N]
+                       [--reviewer agent:N|user:N|creator|owner] [--qa agent:N|user:N]
                        [--participant agent:N:reviewer|user:N:qa|agent:N:role:NUM]...
                        [--desc text] [--data JSON]
                        [--tags key[:label[:color]],...]
@@ -655,7 +684,10 @@ Commands:
                           [--currency C] [--benefitable agent:N] [--desc text]
   contract propose <eid> [--status N] [--label X] [--desc text] [--start S]
                           [--end E] [--date D] [--duration N] [--amount N]
-                          [--currency C] [--benefitable agent:N]
+                          [--currency C] [--benefitable agent:N|user:N]
+                          [--reviewer agent:N|user:N|creator|owner]
+                          [--qa agent:N|user:N]
+                          [--participant type:id:role]...
   contract progress <eid> [--status N] --desc TEXT
   contract vote <eid> --ids 1,2,3 --vote true|false
   contract poll
@@ -685,6 +717,8 @@ Exit codes: 0=success, 1=error, 2=auth, 3=session_not_found, 4=timeout, 5=networ
 // --- Main ---
 
 async function main(): Promise<void> {
+  loadConfig(); // ~/.ceki/config → process.env (env wins, silent if missing)
+
   const argv = process.argv.slice(2);
 
   if (argv.length === 0 || argv[0] === '--help' || argv[0] === '-h') {

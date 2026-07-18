@@ -43,9 +43,20 @@ export class ContractError extends Error {
   }
 }
 
-/** Parse 'agent:N' / 'user:N' into {type, value}. Throws on malformed input. */
+/** Parse 'agent:N' / 'user:N' into {type, value}. Throws on malformed input.
+ *
+ * Also accepts special markers:
+ *   'creator' — resolves to event.user_id  (client-side, see _resolveUsers)
+ *   'owner'   — resolves to contract.owner_id (client-side, see _resolveUsers)
+ */
 export function parseBenefitable(value: string | null | undefined): Benefitable | null {
   if (value === null || value === undefined || value === '') return null;
+
+  // Special markers for client-side resolution
+  if (value === 'creator' || value === 'owner') {
+    return { type: value, value: 0 };
+  }
+
   const parts = String(value).split(':');
   if (parts.length !== 2) {
     throw new Error(`benefitable must be 'type:id', got: ${JSON.stringify(value)}`);
@@ -58,7 +69,7 @@ export function parseBenefitable(value: string | null | undefined): Benefitable 
   return { type: btype, value: num };
 }
 
-/** Parse 'agent:N' / 'user:N' into {participable_id, type, role_id}.
+/** Parse 'agent:N' / 'user:N' / 'creator' / 'owner' into ParticipantSpec.
  *
  * Wire shape declared by the create-contract-event MCP tool schema:
  * `participable_id` + `type` (short token: 'agent' or 'user') + `role_id`.
@@ -66,6 +77,10 @@ export function parseBenefitable(value: string | null | undefined): Benefitable 
  * `participable_type` (FQCN) silently loses the type and the backend
  * membership lookup defaults to user → misleading 422 "Participant must
  * be a member of the contract". Send `type`.
+ *
+ * Special markers 'creator' and 'owner' are NOT resolved here — they pass
+ * through as markers (participable_id: 0) and are resolved client-side
+ * in create() / propose() via _resolveUsers().
  */
 export function parseParticipant(
   value: string | null | undefined,
@@ -73,6 +88,10 @@ export function parseParticipant(
 ): ParticipantSpec | null {
   const base = parseBenefitable(value);
   if (base === null) return null;
+  // Special markers pass through for client-side resolution
+  if (base.type === 'creator' || base.type === 'owner') {
+    return { participable_id: 0, type: base.type, role_id: roleId };
+  }
   return {
     participable_id: base.value,
     type: base.type as 'agent' | 'user',
@@ -319,6 +338,12 @@ export type ProposeOptions = {
   amount?: number;
   currency?: string;
   benefitable?: string;
+  /** Agent or user spec for reviewer role, e.g. 'agent:5' or 'owner'. */
+  reviewer?: string;
+  /** Agent or user spec for QA role, e.g. 'user:12' or 'creator'. */
+  qa?: string;
+  /** Extra participant specs (beyond reviewer/qa). */
+  participants?: ParticipantSpec[];
   /** Settings blob (tags, reply_to, blocked_by, do_after) — forwarded
    *  verbatim into the propose-correction wire payload. 2807 / ev 2796. */
   settings?: ContractSettings;
@@ -496,6 +521,8 @@ export class ContractClient {
     if (opts.participants && opts.participants.length) {
       users.push(...opts.participants);
     }
+    // Resolve creator/owner markers before sending
+    const resolvedUsers = await this._resolveUsers(users, undefined, contractId);
 
     const args = cleanArgs({
       contract_id: Number(contractId),
@@ -513,7 +540,7 @@ export class ContractClient {
       description: opts.description,
       data: opts.data,
       benefitable: opts.benefitable !== undefined ? parseBenefitable(opts.benefitable) : undefined,
-      users: users.length > 0 ? users : undefined,
+      users: resolvedUsers.length > 0 ? resolvedUsers : undefined,
       // back/3165: project tags live in events.settings.tags[]. `tags` is
       // SDK/CLI sugar — emitted on the wire under the `settings` blob.
       settings: opts.tags && opts.tags.length ? { tags: opts.tags } : undefined,
@@ -541,12 +568,27 @@ export class ContractClient {
   }
 
   async propose(eventId: number, opts: ProposeOptions = {}): Promise<unknown> {
-    const { label, description } = splitLabelDesc(opts.label, opts.description);
+    // propose is a correction/PATCH — label and description are independent
+    // fields. Do NOT use splitLabelDesc (which maps desc→label when label is
+    // absent) — that would make --desc set the label instead of description.
+    //
+    // reviewer/qa/participants build users[] the same way as create().
+    const users: ParticipantSpec[] = [];
+    const rev = parseParticipant(opts.reviewer, ROLE_REVIEWER);
+    if (rev !== null) users.push(rev);
+    const qa = parseParticipant(opts.qa, ROLE_QA);
+    if (qa !== null) users.push(qa);
+    if (opts.participants && opts.participants.length) {
+      users.push(...opts.participants);
+    }
+    // Resolve creator/owner markers before sending
+    const resolvedUsers = await this._resolveUsers(users, eventId);
+
     const args = cleanArgs({
       event_id: Number(eventId),
       status_id: opts.status,
-      label,
-      description,
+      label: opts.label ?? undefined,
+      description: opts.description ?? undefined,
       start: opts.start,
       end: opts.end,
       date: opts.date,
@@ -557,6 +599,7 @@ export class ContractClient {
       // 2807: settings (tags, reply_to, blocked_by, do_after) forwarded
       // verbatim. Backend ev 2796 c46 persists onto events.settings.
       settings: opts.settings,
+      users: resolvedUsers.length > 0 ? resolvedUsers : undefined,
     });
     return this.call(TOOL_MAP.propose, args as Record<string, unknown>);
   }
@@ -586,6 +629,99 @@ export class ContractClient {
       ids: ids.map((i) => Number(i)),
       vote: Boolean(vote),
     });
+  }
+
+  /**
+   * Resolve special markers ('creator', 'owner') in a users array to
+   * actual user IDs before sending to the backend.
+   *
+   * 'creator' — fetched via task(eventId).user_id  (requires eventId)
+   * 'owner'   — fetched via contract owner lookup    (requires contractId)
+   *
+   * When a marker cannot be resolved (missing context), an error is thrown.
+   */
+  private async _resolveUsers(
+    users: ParticipantSpec[],
+    eventId?: number,
+    contractId?: number,
+  ): Promise<ParticipantSpec[]> {
+    const hasMarker = users.some((u) => u.type === 'creator' || u.type === 'owner');
+    if (!hasMarker) return users;
+
+    let creatorId: number | undefined;
+    let ownerId: number | undefined;
+
+    const resolved: ParticipantSpec[] = [];
+    for (const u of users) {
+      if (u.type === 'creator') {
+        if (creatorId === undefined) {
+          if (eventId === undefined) {
+            throw new ContractError(
+              'Cannot resolve "creator" marker without an event_id (not available in create context)',
+            );
+          }
+          const event = (await this.task(eventId)) as Record<string, unknown>;
+          creatorId = Number((event as Record<string, unknown>)['user_id']);
+          if (!creatorId || Number.isNaN(creatorId)) {
+            throw new ContractError(
+              `Event ${eventId} has no user_id — cannot resolve "creator" marker`,
+            );
+          }
+        }
+        resolved.push({ participable_id: creatorId, type: 'user', role_id: u.role_id });
+      } else if (u.type === 'owner') {
+        if (ownerId === undefined) {
+          const cid = contractId ?? await this._resolveOwnerContractId(eventId);
+          ownerId = await this._resolveOwner(cid);
+        }
+        resolved.push({ participable_id: ownerId, type: 'user', role_id: u.role_id });
+      } else {
+        resolved.push(u);
+      }
+    }
+    return resolved;
+  }
+
+  /**
+   * Resolve "owner" marker to a contract's owner_id.
+   * Fetches the contract list and filters by contract_id.
+   */
+  private async _resolveOwner(contractId: number): Promise<number> {
+    const contracts = (await this.listContracts()) as
+      | Array<Record<string, unknown>>
+      | Record<string, unknown>;
+    const list = Array.isArray(contracts)
+      ? contracts
+      : ((contracts as Record<string, unknown>)['contracts'] as Array<Record<string, unknown>>) ?? [];
+    const contract = list.find((c) => Number(c['id']) === contractId);
+    if (!contract) {
+      throw new ContractError(`Contract ${contractId} not found — cannot resolve "owner" marker`);
+    }
+    const ownerId = Number(contract['owner_id']);
+    if (!ownerId || Number.isNaN(ownerId)) {
+      throw new ContractError(
+        `Contract ${contractId} has no owner_id — cannot resolve "owner" marker`,
+      );
+    }
+    return ownerId;
+  }
+
+  /**
+   * Given an event_id, fetch the event to find its contract_id.
+   * Used internally by _resolveUsers for the "owner" marker on propose.
+   */
+  private async _resolveOwnerContractId(eventId?: number): Promise<number> {
+    if (eventId === undefined) {
+      throw new ContractError('Cannot resolve "owner" marker without contract_id or event_id');
+    }
+    const event = (await this.task(eventId)) as Record<string, unknown>;
+    const cid = Number(event['contract_id']);
+    if (!cid || Number.isNaN(cid)) {
+      throw new ContractError(
+        `Event ${eventId} has no contract_id — cannot resolve "owner" marker`,
+      );
+    }
+    return cid;
   }
 
   // ── polling (REST, not MCP) ────────────────────────────────────

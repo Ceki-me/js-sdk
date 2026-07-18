@@ -111,6 +111,12 @@ describe('parseBenefitable', () => {
   it('throws on malformed', () => {
     expect(() => parseBenefitable('agent_no_colon')).toThrow();
   });
+  it('accepts creator marker', () => {
+    expect(parseBenefitable('creator')).toEqual({ type: 'creator', value: 0 });
+  });
+  it('accepts owner marker', () => {
+    expect(parseBenefitable('owner')).toEqual({ type: 'owner', value: 0 });
+  });
 });
 
 describe('cleanArgs', () => {
@@ -392,6 +398,22 @@ describe('propose()', () => {
     const c = new ContractClient({ endpoint: 'http://x/mcp/agent', token: 't', http });
     await c.propose(7, { status: 222 });
     expect('settings' in lastArgs(cap)).toBe(false);
+  });
+  it('--desc alone maps to description, NOT label (BUG FIX)', async () => {
+    const { http, cap } = makeHttp({ body: mcpText({}) });
+    const c = new ContractClient({ endpoint: 'http://x/mcp/agent', token: 't', http });
+    await c.propose(7, { description: 'my desc' });
+    const a = lastArgs(cap);
+    expect(a.description).toBe('my desc');
+    expect(a).not.toHaveProperty('label');
+  });
+  it('--label + --desc both go to their own fields', async () => {
+    const { http, cap } = makeHttp({ body: mcpText({}) });
+    const c = new ContractClient({ endpoint: 'http://x/mcp/agent', token: 't', http });
+    await c.propose(7, { label: 'L', description: 'D' });
+    const a = lastArgs(cap);
+    expect(a.label).toBe('L');
+    expect(a.description).toBe('D');
   });
 });
 

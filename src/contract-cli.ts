@@ -158,6 +158,72 @@ function requireFlag(args: Args, key: string): string {
   return v;
 }
 
+/**
+ * Resolve TASK_REVIEWER env value to a reviewer spec string.
+ *
+ * Supports:
+ *   - `agent:N` / `user:N` → passed through as-is
+ *   - `creator` → resolved via `client.listContracts()`, extracting the
+ *     contract's creator as `type:id`
+ *   - `owner` → same but extracts the contract's owner
+ *   - any other value → passed through as-is
+ */
+async function resolveTaskReviewer(
+  client: ContractClient,
+  cid: number,
+  raw: string,
+): Promise<string> {
+  const trimmed = raw.trim();
+  if (!trimmed) throw new Error('TASK_REVIEWER is empty');
+
+  if (trimmed.startsWith('agent:') || trimmed.startsWith('user:')) {
+    return trimmed;
+  }
+
+  if (trimmed !== 'creator' && trimmed !== 'owner') {
+    return trimmed; // pass through unknown value
+  }
+
+  // Resolve creator/owner from the contract list
+  const rawResult = await client.listContracts();
+  let contracts: Array<Record<string, unknown>> = [];
+  if (Array.isArray(rawResult)) {
+    contracts = rawResult;
+  } else if (rawResult && typeof rawResult === 'object') {
+    const items = (rawResult as Record<string, unknown>).items;
+    if (Array.isArray(items)) contracts = items;
+  }
+
+  const contract = contracts.find((c) => Number(c.id) === cid);
+  if (!contract) {
+    throw new Error(
+      `TASK_REVIEWER=${trimmed}: contract ${cid} not found in your contract list`,
+    );
+  }
+
+  // Try nested object: contract.creator / contract.owner
+  const nest = contract[trimmed];
+  if (nest && typeof nest === 'object' && !Array.isArray(nest)) {
+    const o = nest as Record<string, unknown>;
+    const id = o.id ?? o.user_id;
+    const ptype = (o.type as string | undefined) ?? (o.participable_type as string | undefined) ?? 'user';
+    if (id != null) return `${ptype}:${String(id)}`;
+  }
+
+  // Fallback to flat fields: creator_id, creator_type / owner_id, owner_type
+  const idKey = `${trimmed}_id`;
+  const typeKey = `${trimmed}_type`;
+  const flatId = (contract as Record<string, unknown>)[idKey];
+  if (flatId != null) {
+    const flatType = ((contract as Record<string, unknown>)[typeKey] as string | undefined) ?? 'user';
+    return `${flatType}:${String(flatId)}`;
+  }
+
+  throw new Error(
+    `TASK_REVIEWER=${trimmed}: cannot resolve ${trimmed} for contract ${cid}`,
+  );
+}
+
 function dump(value: unknown): void {
   out(value);
 }
@@ -303,6 +369,39 @@ export async function cmdContract(argv: string[]): Promise<number> {
           err('contract create: cid must be int', 'args');
           return 1;
         }
+
+        // CLI-args > env (TASK_*) > current default (undefined = API default)
+        // --qa
+        let qa = flagStr(args, 'qa');
+        if (qa === undefined) {
+          const envQa = process.env.TASK_QA;
+          if (envQa && envQa.trim()) qa = envQa.trim();
+        }
+
+        // --reviewer (with creator/owner keyword resolution)
+        let reviewer = flagStr(args, 'reviewer');
+        if (reviewer === undefined) {
+          const envReviewer = process.env.TASK_REVIEWER;
+          if (envReviewer && envReviewer.trim()) {
+            try {
+              reviewer = await resolveTaskReviewer(client, cid, envReviewer.trim());
+            } catch (e) {
+              err((e as Error).message, 'config');
+              return 1;
+            }
+          }
+        }
+
+        // --status
+        let status = flagInt(args, 'status');
+        if (status === undefined) {
+          const envStatus = process.env.TASK_DEFAULT_STATUS;
+          if (envStatus && envStatus.trim()) {
+            const parsed = Number.parseInt(envStatus.trim(), 10);
+            if (!Number.isNaN(parsed)) status = parsed;
+          }
+        }
+
         const label = requireFlag(args, 'label');
         const dataRaw = flagStr(args, 'data');
         const dataObj = dataRaw ? JSON.parse(dataRaw) : undefined;
@@ -320,7 +419,7 @@ export async function cmdContract(argv: string[]): Promise<number> {
           await client.create(cid, {
             label,
             type: flagInt(args, 'type'),
-            status: flagInt(args, 'status'),
+            status,
             kalScheduleId: flagInt(args, 'kal-schedule'),
             start: flagStr(args, 'start'),
             end: flagStr(args, 'end'),
@@ -332,8 +431,8 @@ export async function cmdContract(argv: string[]): Promise<number> {
             description: flagStr(args, 'desc'),
             data: dataObj,
             benefitable: flagStr(args, 'benefitable'),
-            reviewer: flagStr(args, 'reviewer'),
-            qa: flagStr(args, 'qa'),
+            reviewer,
+            qa,
             participants: extras.length > 0 ? extras : undefined,
             tags,
           }),
@@ -382,6 +481,14 @@ export async function cmdContract(argv: string[]): Promise<number> {
             return 1;
           }
         }
+        // Parse participant/reviewer/qa — same logic as create()
+        let extras: ParticipantSpec[] = [];
+        try {
+          extras = flagList(args, 'participant').map(parseParticipantSpec);
+        } catch (e) {
+          err((e as Error).message, 'args');
+          return 1;
+        }
         dump(
           await client.propose(eid, {
             status: flagInt(args, 'status'),
@@ -394,6 +501,9 @@ export async function cmdContract(argv: string[]): Promise<number> {
             amount: flagInt(args, 'amount'),
             currency: flagStr(args, 'currency'),
             benefitable: flagStr(args, 'benefitable'),
+            reviewer: flagStr(args, 'reviewer'),
+            qa: flagStr(args, 'qa'),
+            participants: extras.length > 0 ? extras : undefined,
             settings,
           }),
         );
