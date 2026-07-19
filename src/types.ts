@@ -76,6 +76,7 @@ export interface RentOptions {
   maskingMode?: boolean;
   fingerprint?: boolean | Record<string, unknown>;
   mode?: 'incognito' | 'main';
+  pacingProfile?: string;
 }
 
 export interface ScreenshotOptions {
