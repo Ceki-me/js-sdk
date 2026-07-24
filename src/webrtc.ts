@@ -15,14 +15,15 @@
  * 5. ``ceki-cmd`` DC open -> CDP JSON commands sent over DC instead of WS
  * 6. Inbound CDP responses/events arrive on DC -> forwarded to callback
  */
-import {
+import wrtc from '@roamhq/wrtc';
+const {
   RTCPeerConnection,
   RTCDataChannel,
   RTCDataChannelEvent,
   RTCIceCandidate,
   RTCSessionDescription,
   RTCPeerConnectionIceEvent,
-} from '@roamhq/wrtc';
+} = wrtc;
 
 // SDP fingerprint extraction regex (mirrors front extractFingerprint)
 const FINGERPRINT_RE = /a=fingerprint:(sha-\d+) (\S+)/i;
