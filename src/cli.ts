@@ -282,9 +282,11 @@ async function cmdType(sid: string, args: string[]): Promise<void> {
   // backwards compatibility.
   let text = '';
   let raw = false;
+  let selector: string | null = null;
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--no-human' || args[i] === '--raw') raw = true;
     else if (args[i] === '--natural') { /* no-op alias */ }
+    else if (args[i] === '--selector' && args[i + 1]) selector = args[++i];
     else if (!text) text = args[i];
   }
   if (!text) {
@@ -295,7 +297,7 @@ async function cmdType(sid: string, args: string[]): Promise<void> {
   const client = await connect(apiKey, connectOptions());
   try {
     const browser = await client.resume(sid);
-    await browser.type(text, raw ? { human: false } : undefined);
+    await browser.type(text, raw ? { human: false } : selector ? { selector } : undefined);
     out({ ok: true });
   } finally {
     await closeClient(client);

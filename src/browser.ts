@@ -15,6 +15,8 @@ interface PendingCdp {
   resolve: (value: unknown) => void;
   reject: (err: Error) => void;
   timer: ReturnType<typeof setTimeout>;
+  /** Transport through which this CDP was sent — for dedup with WS echo */
+  _cdpTransport?: 'dc' | 'ws';
 }
 
 // task 4109 — anti-detect branching for Browser.type().
@@ -47,6 +49,8 @@ export class Browser {
 
   /** @internal */ _client: Client;
   /** @internal */ _humanizer: Humanizer | null = null;
+  /** @internal — once DC fails, stay on WS for this session */
+  _p2pFallback = false;
   /** @internal */ _lastPointer: [number, number] | null = null;
   /** @internal */ _lastSeenTs: string | null = null;
   /** @internal */ _cdpCounter = 1;
@@ -120,8 +124,11 @@ export class Browser {
     }
 
     const id = this._cdpCounter++;
-    const msg = {
-      type: 'cdp' as const,
+    const p2p = this._client._p2p;
+    const usingDc = p2p !== null && !this._p2pFallback;
+
+    const wsMsg: Record<string, unknown> = {
+      type: 'cdp',
       session_id: this.sessionId,
       id,
       method: cdp.method,
@@ -133,9 +140,60 @@ export class Browser {
         this._pendingCdp.delete(id);
         reject(new TimeoutError(`CDP ${cdp.method} timed out after ${timeout}ms`));
       }, timeout);
-      this._pendingCdp.set(id, { resolve, reject, timer });
-      this._sendRaw(msg);
+
+      // Tag pending with transport for response routing (P2P screenshot race fix)
+      const pending: PendingCdp = { resolve, reject, timer, _cdpTransport: usingDc ? 'dc' : 'ws' };
+      this._pendingCdp.set(id, pending);
+
+      // P2P path: wait for DC then send over DC. If DC not ready in 5s, fallback to WS.
+      if (usingDc && p2p) {
+        this._sendViaP2p(p2p, id, wsMsg).catch(() => {
+          // Fallback already handled inside _sendViaP2p
+        });
+      } else {
+        // WS path (fallback — used before P2P connects, when forced off,
+        // or after a DC failure for this session)
+        this._sendRaw(wsMsg);
+      }
     });
+  }
+
+  /**
+   * Attempt to send a CDP command via P2P DataChannel.
+   * Falls back to WS on timeout or error.
+   */
+  private async _sendViaP2p(
+    p2p: import('./webrtc.js').WebRTCTransport,
+    id: number,
+    wsMsg: Record<string, unknown>,
+  ): Promise<void> {
+    try {
+      // Wait for DC readiness with 5s timeout (prevents startup-race where
+      // CDP goes over WS before DataChannel opens, congesting the WS and
+      // starving the heartbeat ping -> false 4002 timeout).
+      await Promise.race([
+        p2p.waitForDcOpen(),
+        new Promise<void>((_, reject) =>
+          setTimeout(() => reject(new Error('P2P DC timeout')), 5000)
+        ),
+      ]);
+
+      // DC ready — send CDP over DataChannel
+      await p2p.sendCdp({
+        session_id: this.sessionId,
+        id,
+        method: wsMsg.method as string,
+        params: wsMsg.params as Record<string, unknown>,
+      });
+    } catch {
+      // Fallback to WS if P2P send fails (timeout or DC error)
+      this._p2pFallback = true;
+      const pending = this._pendingCdp.get(id);
+      if (pending) {
+        pending._cdpTransport = 'ws';
+      }
+      this._sendRaw(wsMsg);
+    }
   }
 
   // task 427 — per-call kill-switch. human=false bypasses humanizer timings
@@ -820,6 +878,16 @@ export class Browser {
     const id = Number(msg.id);
     const pending = this._pendingCdp.get(id);
     if (!pending) return;
+
+    // P2P screenshot race fix: when a command was sent via DC (ceki-cmd data
+    // channel), the relay also echoes a WS cdp_response that races ahead
+    // but has empty result for large payloads (screenshot). Skip the WS echo
+    // and wait for the DC response with full data.
+    const transport = pending._cdpTransport ?? 'ws';
+    const isFromWs = String(msg.type) === 'cdp_response' || msg.session_id != null;
+    if (transport === 'dc' && isFromWs) {
+      return;
+    }
 
     clearTimeout(pending.timer);
     this._pendingCdp.delete(id);

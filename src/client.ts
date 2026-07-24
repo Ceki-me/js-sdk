@@ -18,6 +18,8 @@ import {
 import { Browser } from './browser.js';
 import { Humanizer } from './humanize/humanizer.js';
 import { HumanProfile } from './humanize/profile.js';
+import { WebRTCTransport } from './webrtc.js';
+import type { RTCIceServer } from './webrtc.js';
 import type { ConnectOptions, BrowserOption, Match, RentOptions, SessionInfo } from './types.js';
 
 const BACKOFF_SCHEDULE = [1, 2, 4, 8, 16, 32, 60];
@@ -55,6 +57,7 @@ export class Client {
   /** @internal */ _chatUrl: string;
   /** @internal */ _basicAuth: [string, string] | undefined;
   /** @internal */ _activeBrowsers: Map<string, Browser> = new Map();
+  /** @internal */ _p2p: WebRTCTransport | null = null;
 
   private _ws: WebSocket | null = null;
   /** @internal */ _apiUrl: string;
@@ -75,6 +78,12 @@ export class Client {
   private _connectResolve: (() => void) | null = null;
   private _connectReject: ((err: Error) => void) | null = null;
 
+  // P2P WebRTC transport (primary, WS = fallback)
+  private _p2pEnabled: boolean;
+  private _p2pInitializing = false;
+  // ICE servers discovered from webrtc.answer (set by relay)
+  private _p2pIceServers: RTCIceServer[] | null = null;
+
   constructor(apiKey: string, opts?: Partial<ConnectOptions>) {
     const cfg = resolveConfig(opts);
     this._apiKey = apiKey;
@@ -83,6 +92,11 @@ export class Client {
     this._chatUrl = cfg.chatUrl;
     this._basicAuth = cfg.basicAuth;
     this._reconnect = cfg.reconnect;
+    this._p2pEnabled = !(
+      typeof process !== 'undefined'
+      && process.env.CEKI_FORCE_WS
+      && ['1', 'true', 'yes'].includes(process.env.CEKI_FORCE_WS.toLowerCase())
+    );
   }
 
   /** Factory: create client and connect */
@@ -264,6 +278,12 @@ export class Client {
   async close(): Promise<void> {
     this._closed = true;
 
+    // Close P2P transport first, then browsers
+    if (this._p2p !== null) {
+      await this._p2p.close();
+      this._p2p = null;
+    }
+
     // Close all active browsers
     const closePromises: Promise<void>[] = [];
     for (const browser of this._activeBrowsers.values()) {
@@ -298,6 +318,11 @@ export class Client {
 
   async disconnect(): Promise<void> {
     this._closed = true;
+    // Close P2P transport (disconnect WS but keep session)
+    if (this._p2p !== null) {
+      await this._p2p.close();
+      this._p2p = null;
+    }
     this._activeBrowsers.clear();
     this._pendingRents.clear();
     this._pendingResumes.clear();
@@ -569,6 +594,40 @@ export class Client {
         }
         break;
 
+      // ── P2P WebRTC signaling ──────────────────────────────
+
+      case 'webrtc.answer':
+        if (sessionId && this._p2p !== null) {
+          this._handleP2pAnswer(sessionId, msg);
+        }
+        break;
+
+      case 'webrtc.offer':
+        {
+          const iceServers = msg.ice_servers as RTCIceServer[] | undefined;
+          if (iceServers) {
+            this._p2pIceServers = iceServers;
+          }
+          if (sessionId && this._p2pEnabled) {
+            this._initP2PFromOffer(sessionId, msg).catch((err) => {
+              console.warn('p2p: failed to handle incoming offer:', err);
+            });
+          }
+        }
+        break;
+
+      case 'webrtc.ice_candidate':
+        if (this._p2p !== null) {
+          this._p2p.addIceCandidate({
+            candidate: String(msg.candidate ?? ''),
+            sdpMid: msg.sdp_mid != null ? String(msg.sdp_mid) : null,
+            sdpMLineIndex: msg.sdp_mline_index != null ? Number(msg.sdp_mline_index) : 0,
+          }).catch(() => {
+            // Silently skip invalid candidates
+          });
+        }
+        break;
+
       case 'error':
         this._onError(msg);
         break;
@@ -621,6 +680,13 @@ export class Client {
       };
 
       pending.resolve(match);
+
+      // Initiate P2P WebRTC after successful match
+      if (this._p2pEnabled && sessionId) {
+        this._initP2P(sessionId).catch((err) => {
+          console.warn('p2p: init failed after match:', err);
+        });
+      }
     }
   }
 
@@ -819,6 +885,205 @@ export class Client {
       return new Humanizer(HumanProfile.loadPreset(human));
     }
     return null;
+  }
+
+  // ──────────────────────────────────────────────────────────
+  // P2P WebRTC transport
+  // ──────────────────────────────────────────────────────────
+
+  /**
+   * Handle incoming webrtc.answer — set as remote description.
+   */
+  private _handleP2pAnswer(sessionId: string, msg: Record<string, unknown>): void {
+    const sdp = String(msg.sdp ?? '');
+    if (!sdp) return;
+
+    this._p2p?.setRemoteDescription(sdp, 'answer').catch((err) => {
+      console.warn('p2p: setRemoteDescription failed:', err);
+    });
+  }
+
+  /**
+   * Initialize P2P WebRTC transport after a successful match.
+   *
+   * Creates a ``WebRTCTransport``, wires ICE candidate callback to send
+   * via WS signaling, creates an offer, and sends ``webrtc.offer``.
+   *
+   * Mirrors the front flow in ``useWebRTCP2P.js createAndSendOffer``.
+   */
+  private async _initP2P(sessionId: string): Promise<void> {
+    if (this._p2pInitializing) return;
+    this._p2pInitializing = true;
+
+    try {
+      if (this._p2p !== null) return; // already initialized
+
+      // Merge discovered ICE servers with constructor defaults/environment
+      const iceServers: RTCIceServer[] = this._p2pIceServers ?? [
+        { urls: 'stun:stun.l.google.com:19302' },
+      ];
+
+      const transport = new WebRTCTransport({
+        iceServers,
+        iceTransportPolicy: (typeof process !== 'undefined'
+          && process.env.CEKI_ICE_TRANSPORT_POLICY === 'relay')
+          ? 'relay'
+          : undefined,
+      });
+
+      // Wire ICE candidate callback → WS signaling
+      transport.onIceCandidate = (candidate) => {
+        const payload: Record<string, unknown> = {
+          type: 'webrtc.ice_candidate',
+          session_id: sessionId,
+          candidate: candidate.candidate ?? '',
+          sdp_mid: candidate.sdpMid ?? null,
+          sdp_mline_index: candidate.sdpMLineIndex ?? 0,
+          fingerprint: transport.localFingerprint ?? '',
+        };
+        try {
+          this._wsSend(payload);
+        } catch {
+          // Best-effort ICE candidate send
+        }
+      };
+
+      // Wire CDP message callback → route to active browser
+      transport.onCdpMessage = (msg) => {
+        const cmdId = msg.id;
+        const method = String(msg.method ?? '');
+        const sid = String(msg.session_id ?? sessionId);
+        const browser = this._activeBrowsers.get(sid);
+        if (browser) {
+          if (cmdId != null) {
+            browser._onCdpResponse(msg);
+          } else if (method) {
+            browser._onCdpEvent(msg);
+          }
+        }
+      };
+
+      // Wire connection state callback for lifecycle monitoring
+      transport.onConnectionState = (state) => {
+        if (state === 'failed') {
+          if (this._p2p !== null) {
+            this._p2p.close().catch(() => {});
+            this._p2p = null;
+          }
+        }
+      };
+
+      this._p2p = transport;
+
+      const offerSdp = await transport.createOffer();
+      const fingerprint = transport.localFingerprint ?? '';
+
+      await this._wsSend({
+        type: 'webrtc.offer',
+        session_id: sessionId,
+        sdp: offerSdp,
+        fingerprint,
+      });
+    } catch (err) {
+      // Fallback: P2P failed, WS path continues to work
+      if (this._p2p !== null) {
+        await this._p2p.close().catch(() => {});
+        this._p2p = null;
+      }
+    } finally {
+      this._p2pInitializing = false;
+    }
+  }
+
+  /**
+   * Initialize P2P from an incoming webrtc.offer (host-initiated).
+   *
+   * Used in the agent-attach flow where the extension (host) creates the
+   * offer and sends it via the relay. This method creates a
+   * ``WebRTCTransport``, sets the remote description from the offer,
+   * creates an answer, and sends the answer back.
+   */
+  private async _initP2PFromOffer(sessionId: string, msg: Record<string, unknown>): Promise<void> {
+    if (this._p2pInitializing) return;
+    this._p2pInitializing = true;
+
+    try {
+      if (this._p2p !== null) return; // already initialized
+
+      const iceServers: RTCIceServer[] = this._p2pIceServers
+        ?? (msg.ice_servers as RTCIceServer[] | undefined)
+        ?? [{ urls: 'stun:stun.l.google.com:19302' }];
+
+      const transport = new WebRTCTransport({
+        iceServers,
+        iceTransportPolicy: (typeof process !== 'undefined'
+          && process.env.CEKI_ICE_TRANSPORT_POLICY === 'relay')
+          ? 'relay'
+          : undefined,
+      });
+
+      // Wire ICE candidate callback → WS signaling
+      transport.onIceCandidate = (candidate) => {
+        const payload: Record<string, unknown> = {
+          type: 'webrtc.ice_candidate',
+          session_id: sessionId,
+          candidate: candidate.candidate ?? '',
+          sdp_mid: candidate.sdpMid ?? null,
+          sdp_mline_index: candidate.sdpMLineIndex ?? 0,
+          fingerprint: transport.localFingerprint ?? '',
+        };
+        try {
+          this._wsSend(payload);
+        } catch {
+          // Best-effort ICE candidate send
+        }
+      };
+
+      // Wire CDP message callback → route to active browser
+      transport.onCdpMessage = (innerMsg) => {
+        const cmdId = innerMsg.id;
+        const method = String(innerMsg.method ?? '');
+        const browser = this._activeBrowsers.get(sessionId);
+        if (browser) {
+          if (cmdId != null) {
+            browser._onCdpResponse(innerMsg);
+          } else if (method) {
+            browser._onCdpEvent(innerMsg);
+          }
+        }
+      };
+
+      // Wire connection state callback
+      transport.onConnectionState = (state) => {
+        if (state === 'failed') {
+          if (this._p2p !== null) {
+            this._p2p.close().catch(() => {});
+            this._p2p = null;
+          }
+        }
+      };
+
+      this._p2p = transport;
+
+      const sdp = String(msg.sdp ?? '');
+      const answerSdp = await transport.createAnswer(sdp);
+      const fingerprint = transport.localFingerprint ?? '';
+
+      await this._wsSend({
+        type: 'webrtc.answer',
+        session_id: sessionId,
+        sdp: answerSdp,
+        fingerprint,
+      });
+    } catch (err) {
+      // Fallback: P2P failed, WS path continues to work
+      if (this._p2p !== null) {
+        await this._p2p.close().catch(() => {});
+        this._p2p = null;
+      }
+    } finally {
+      this._p2pInitializing = false;
+    }
   }
 }
 
