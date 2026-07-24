@@ -246,7 +246,7 @@ export class Client {
   }
 
   async join(scheduleId: number, opts?: RentOptions): Promise<Browser> {
-    this._wsSend({ type: 'attach', browser_id: scheduleId });
+    this._wsSend({ type: 'attach', schedule_id: scheduleId });
 
     return new Promise<Browser>((resolve, reject) => {
       const timer = setTimeout(() => {
