@@ -42,6 +42,14 @@ interface PendingResume {
   opts?: RentOptions;
 }
 
+interface PendingAttach {
+  scheduleId: number;
+  resolve: (match: Match) => void;
+  reject: (err: Error) => void;
+  timer: ReturnType<typeof setTimeout>;
+  opts?: RentOptions;
+}
+
 export class Client {
   /** @internal */ _apiKey: string;
   /** @internal */ _chatUrl: string;
@@ -62,6 +70,7 @@ export class Client {
 
   private _pendingRents: Map<string, PendingRent> = new Map(); // keyed by `rent:<scheduleId>` or eventId
   private _pendingResumes: Map<string, PendingResume> = new Map(); // keyed by sessionId
+  private _pendingAttaches: Map<number, PendingAttach> = new Map(); // keyed by scheduleId
 
   private _connectResolve: (() => void) | null = null;
   private _connectReject: ((err: Error) => void) | null = null;
@@ -222,6 +231,36 @@ export class Client {
     });
   }
 
+  async join(scheduleId: number, opts?: RentOptions): Promise<Browser> {
+    this._wsSend({ type: 'attach', browser_id: scheduleId });
+
+    return new Promise<Browser>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this._pendingAttaches.delete(scheduleId);
+        reject(new TimeoutError('Join timed out after 90s'));
+      }, 90000);
+
+      this._pendingAttaches.set(scheduleId, {
+        scheduleId,
+        opts,
+        resolve: (match: Match) => {
+          const humanizer = this._resolveHumanizer(opts);
+          const browser = new Browser(this, match, humanizer);
+          this._activeBrowsers.set(browser.sessionId, browser);
+          if (opts?.maskingMode) {
+            browser.configure({ maskingMode: true }).catch(() => {});
+          }
+          if (opts?.fingerprint) {
+            browser.configure({ fingerprint: opts.fingerprint }).catch(() => {});
+          }
+          resolve(browser);
+        },
+        reject,
+        timer,
+      });
+    });
+  }
+
   async close(): Promise<void> {
     this._closed = true;
 
@@ -246,6 +285,13 @@ export class Client {
     }
     this._pendingResumes.clear();
 
+    // Reject pending attaches
+    for (const [scheduleId, pending] of this._pendingAttaches) {
+      clearTimeout(pending.timer);
+      pending.reject(new Error('Client closed'));
+    }
+    this._pendingAttaches.clear();
+
     this._stopHeartbeat();
     this._closeWs();
   }
@@ -255,6 +301,7 @@ export class Client {
     this._activeBrowsers.clear();
     this._pendingRents.clear();
     this._pendingResumes.clear();
+    this._pendingAttaches.clear();
     this._stopHeartbeat();
     this._closeWs();
   }
@@ -439,6 +486,10 @@ export class Client {
 
       case 'resume_failed':
         this._onResumeFailed(msg);
+        break;
+
+      case 'attach_ok':
+        this._onAttachOk(msg);
         break;
 
       case 'cdp_response':
@@ -645,6 +696,28 @@ export class Client {
     }
   }
 
+  private _onAttachOk(msg: Record<string, unknown>): void {
+    const scheduleId = Number(msg.schedule_id ?? 0);
+    const sessionId = String(msg.session_id ?? '');
+    const pending = this._pendingAttaches.get(scheduleId);
+    if (!pending) return;
+
+    clearTimeout(pending.timer);
+    this._pendingAttaches.delete(scheduleId);
+
+    const match: Match = {
+      session_id: sessionId,
+      schedule_id: scheduleId,
+      event_id: msg.event_id != null ? String(msg.event_id) : null,
+      chat_topic_id: msg.chat_topic_id ? String(msg.chat_topic_id) : null,
+      provider_user_id: msg.provider_user_id != null ? Number(msg.provider_user_id) : null,
+      started_at: Date.now(),
+      browser_info: (msg.browser_info as Record<string, unknown>) ?? {},
+    };
+
+    pending.resolve(match);
+  }
+
   private _onError(msg: Record<string, unknown>): void {
     const code = Number(msg.code ?? 0);
     const reason = String(msg.reason ?? msg.message ?? '');
@@ -724,6 +797,12 @@ export class Client {
       pending.reject(err);
     }
     this._pendingResumes.clear();
+
+    for (const [scheduleId, pending] of this._pendingAttaches) {
+      clearTimeout(pending.timer);
+      pending.reject(err);
+    }
+    this._pendingAttaches.clear();
   }
 
   private _resolveHumanizer(opts?: RentOptions): Humanizer | null {
