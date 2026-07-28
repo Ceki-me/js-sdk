@@ -20,6 +20,8 @@ import type { ConnectOptions, ChatMessage } from './types.js';
 import type { Client } from './client.js';
 import type { Browser } from './browser.js';
 import { cmdContract, cmdHire, cmdTimelog } from './contract-cli.js';
+import { DaemonServer, checkHealth } from './daemon.js';
+import { spawn } from 'node:child_process';
 
 /** Load ~/.ceki/config KEY=VALUE lines into process.env (env wins). Silently skip if missing. */
 function loadConfig(): void {
@@ -105,6 +107,20 @@ async function cmdRent(args: string[]): Promise<void> {
   if (scheduleId == null) {
     err('--schedule is required', 'args');
     process.exit(1);
+  }
+
+  // Auto-start daemon if CEKI_DAEMON_AUTOSTART=1 (python parity)
+  if (process.env.CEKI_DAEMON_AUTOSTART === '1' || process.env.CEKI_DAEMON_AUTOSTART === 'true') {
+    const health = await checkHealth();
+    if (!health?.ok) {
+      const child = spawn(process.argv[0], [process.argv[1], 'daemon', 'start'], {
+        detached: true,
+        stdio: 'ignore',
+      });
+      child.unref();
+      // Give daemon a moment to start
+      await new Promise((r) => setTimeout(r, 1500));
+    }
   }
 
   const apiKey = getApiKey();
@@ -502,9 +518,18 @@ async function cmdWait(sid: string): Promise<void> {
 async function cmdScreenshot(sid: string, args: string[]): Promise<void> {
   let outputPath: string | null = null;
   let fullPage = false;
+  let format: 'png' | 'jpeg' = 'png';
   for (let i = 0; i < args.length; i++) {
     if ((args[i] === '-o' || args[i] === '--output') && args[i + 1]) outputPath = args[++i];
     if (args[i] === '--full') fullPage = true;
+    if (args[i] === '--format' && args[i + 1]) {
+      const v = args[++i];
+      if (v !== 'png' && v !== 'jpeg') {
+        err('--format must be png or jpeg', 'args');
+        process.exit(1);
+      }
+      format = v;
+    }
   }
   if (!outputPath) {
     err('-o/--output is required', 'args');
@@ -513,8 +538,16 @@ async function cmdScreenshot(sid: string, args: string[]): Promise<void> {
   const apiKey = getApiKey();
   const [client, browser] = await resumeBrowser(apiKey, sid);
   try {
-    const data = await browser.screenshot({ format: 'png', fullPage });
-    fs.writeFileSync(outputPath, data as Buffer);
+    let data: Buffer;
+    if (format === 'jpeg') {
+      // JPEG via _cdpFormat — SDK returns {data: base64}, CLI decodes
+      const result = await browser.screenshot({ format: 'base64', fullPage, _cdpFormat: 'jpeg' });
+      data = Buffer.from((result as { data: string }).data, 'base64');
+    } else {
+      // PNG default — SDK returns raw Buffer
+      data = await browser.screenshot({ format: 'png', fullPage }) as Buffer;
+    }
+    fs.writeFileSync(outputPath, data);
     out({ ok: true, path: outputPath });
   } finally {
     await closeClient(client);
@@ -634,6 +667,78 @@ async function cmdUpload(sid: string, args: string[]): Promise<void> {
   }
 }
 
+// ── Daemon commands ───────────────────────────────────────────────────────
+
+async function cmdDaemon(args: string[]): Promise<void> {
+  const action = args[0];
+  if (!action) {
+    err('Usage: ceki daemon start|stop|status', 'args');
+    process.exit(1);
+  }
+
+  switch (action) {
+    case 'start': {
+      const health = await checkHealth();
+      if (health?.ok === true) {
+        err('daemon is already running', 'daemon');
+        process.exit(1);
+      }
+      const server = new DaemonServer();
+      // Graceful shutdown on SIGTERM/SIGINT
+      const shutdown = async (): Promise<void> => {
+        try { await server.stop(); } catch { /* ignore */ }
+        process.exit(0);
+      };
+      process.on('SIGTERM', () => { void shutdown(); });
+      process.on('SIGINT', () => { void shutdown(); });
+      await server.start();
+      // Block — keep alive until signal
+      await new Promise(() => { /* never resolves */ });
+      break;
+    }
+    case 'stop': {
+      const port = Number.parseInt(process.env.CEKI_DAEMON_PORT ?? '18777', 10);
+      try {
+        const resp = await fetch(`http://127.0.0.1:${port}/health`);
+        if (!resp.ok) {
+          err('daemon is not running', 'daemon');
+          process.exit(1);
+        }
+      } catch {
+        err('daemon is not running', 'daemon');
+        process.exit(1);
+      }
+      // Send SIGTERM to the daemon process
+      const pidFile = '/tmp/ceki-daemon.pid';
+      if (fs.existsSync(pidFile)) {
+        const pid = Number.parseInt(fs.readFileSync(pidFile, 'utf-8').trim(), 10);
+        if (pid && !Number.isNaN(pid)) {
+          process.kill(pid, 'SIGTERM');
+          // Wait briefly for shutdown
+          await new Promise((r) => setTimeout(r, 500));
+          out({ ok: true });
+          return;
+        }
+      }
+      err('PID file not found, daemon may not be running', 'daemon');
+      process.exit(1);
+      break;
+    }
+    case 'status': {
+      const health = await checkHealth();
+      if (health?.ok === true) {
+        out({ running: true, pid: health.pid });
+      } else {
+        out({ running: false });
+      }
+      break;
+    }
+    default:
+      err(`Unknown daemon action: ${action}`, 'args');
+      process.exit(1);
+  }
+}
+
 // --- Help ---
 
 function printHelp(): void {
@@ -646,7 +751,7 @@ Commands:
   my-browsers
   search [--limit N] [--filter k=v]...
   snapshot <sid> -o PATH
-  screenshot <sid> -o PATH [--full]
+  screenshot <sid> -o PATH [--full] [--format png|jpeg]
   navigate <sid> <url> [--no-human|--raw]
   click <sid> <x> <y> [--no-human|--raw]
   type <sid> "<text>" [--no-human|--raw]   (humanized by default)
@@ -664,6 +769,10 @@ Commands:
   profile export <sid> -o file [--domains a,b,c] [--no-session-storage]
   profile import <sid> -i file
   stop <sid>
+
+  daemon start           Start persistent daemon (HTTP IPC on 127.0.0.1:18777)
+  daemon stop            Stop daemon gracefully
+  daemon status          Check if daemon is running
 
   contract list
   contract members <cid>
@@ -690,6 +799,10 @@ Commands:
                           [--reviewer agent:N|user:N|creator|owner]
                           [--qa agent:N|user:N]
                           [--participant type:id:role]...
+  contract edit <eid> [--status N] [--label X] [--desc text] [--start S]
+                       [--end E] [--date D] [--duration N] [--amount N]
+                       [--currency C] [--benefitable agent:N|user:N]
+                       [--tags key[:label[:color]],...]
   contract progress <eid> [--status N] --desc TEXT
   contract vote <eid> --ids 1,2,3 --vote true|false
   contract poll
@@ -750,6 +863,9 @@ async function main(): Promise<void> {
   }
   if (command === 'timelog') {
     process.exit(await cmdTimelog(rest));
+  }
+  if (command === 'daemon') {
+    process.exit(await cmdDaemon(rest));
   }
 
   switch (command) {

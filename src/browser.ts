@@ -357,6 +357,8 @@ export class Browser {
   async screenshot(opts?: ScreenshotOptions): Promise<{ data: string } | Buffer> {
     const format = opts?.format ?? 'base64';
     const fullPage = opts?.fullPage ?? false;
+    // CDP always uses 'png' by default; _cdpFormat permits 'jpeg' override (CLI use)
+    const cdpFormat = opts?._cdpFormat ?? 'png';
 
     let clip: Record<string, unknown> | undefined;
 
@@ -370,12 +372,13 @@ export class Browser {
       }
     }
 
-    const params: Record<string, unknown> = { format: 'png' };
+    const params: Record<string, unknown> = { format: cdpFormat };
     if (clip) params.clip = clip;
 
     const result = await this.send({ method: 'Page.captureScreenshot', params }) as Record<string, unknown>;
     const data = String(result?.data ?? '');
 
+    // encoding axis: 'png' format returns raw Buffer, 'base64' returns { data }
     if (format === 'png') {
       return Buffer.from(data, 'base64');
     }
