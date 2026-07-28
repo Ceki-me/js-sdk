@@ -83,6 +83,9 @@ export class Client {
   private _p2pInitializing = false;
   // ICE servers discovered from webrtc.answer (set by relay)
   private _p2pIceServers: RTCIceServer[] | null = null;
+  private _p2pReady = false;
+  private _resolveP2pReady: (() => void) | null = null;
+  private _p2pReadyPromise: Promise<void> = Promise.resolve();
 
   constructor(apiKey: string, opts?: Partial<ConnectOptions>) {
     const cfg = resolveConfig(opts);
@@ -97,6 +100,10 @@ export class Client {
       && process.env.CEKI_FORCE_WS
       && ['1', 'true', 'yes'].includes(process.env.CEKI_FORCE_WS.toLowerCase())
     );
+    this._p2pReady = !this._p2pEnabled;
+    this._p2pReadyPromise = new Promise<void>((resolve) => {
+      this._resolveP2pReady = resolve;
+    });
   }
 
   /** Factory: create client and connect */
@@ -193,7 +200,8 @@ export class Client {
 
     const key = `rent:${scheduleId}`;
 
-    return new Promise<Browser>((resolve, reject) => {
+    // 1. Wait for match from relay
+    const match = await new Promise<Match>((resolve, reject) => {
       const timer = setTimeout(() => {
         this._pendingRents.delete(key);
         reject(new TimeoutError('Rent timed out after 90s'));
@@ -203,22 +211,37 @@ export class Client {
         scheduleId,
         eventId: null,
         opts,
-        resolve: (match: Match) => {
-          const humanizer = this._resolveHumanizer(opts);
-          const browser = new Browser(this, match, humanizer);
-          this._activeBrowsers.set(browser.sessionId, browser);
-          if (opts?.maskingMode) {
-            browser.configure({ maskingMode: true }).catch(() => {});
-          }
-          if (opts?.fingerprint) {
-            browser.configure({ fingerprint: opts.fingerprint }).catch(() => {});
-          }
-          resolve(browser);
-        },
+        resolve,
         reject,
         timer,
       });
     });
+
+    // 2. Wait for P2P transport to initialize (up to 15s)
+    if (this._p2pEnabled && !this._p2pReady) {
+      try {
+        await Promise.race([
+          this._p2pReadyPromise,
+          new Promise<void>((_, reject) =>
+            setTimeout(() => reject(new Error('P2P timeout')), 15000),
+          ),
+        ]);
+      } catch {
+        console.warn('p2p: transport not ready within 15s, CDP will use WS path');
+      }
+    }
+
+    // 3. Create and configure browser
+    const humanizer = this._resolveHumanizer(opts);
+    const browser = new Browser(this, match, humanizer);
+    this._activeBrowsers.set(browser.sessionId, browser);
+    if (opts?.maskingMode) {
+      browser.configure({ maskingMode: true }).catch(() => {});
+    }
+    if (opts?.fingerprint) {
+      browser.configure({ fingerprint: opts.fingerprint }).catch(() => {});
+    }
+    return browser;
   }
 
   async resume(sessionId: string, opts?: RentOptions): Promise<Browser> {
@@ -478,6 +501,9 @@ export class Client {
   }
 
   private _handleMessage(data: WebSocket.Data): void {
+    // Update liveness on any message (GAP2: prevent false heartbeat timeout when CDP traffic flows)
+    this._lastPongAt = Date.now();
+
     let msg: Record<string, unknown>;
     try {
       msg = JSON.parse(data.toString()) as Record<string, unknown>;
@@ -679,14 +705,14 @@ export class Client {
         browser_info: (msg.browser_info as Record<string, unknown>) ?? {},
       };
 
-      pending.resolve(match);
-
-      // Initiate P2P WebRTC after successful match
+      // Initiate P2P WebRTC BEFORE resolving match — rent() awaits _p2pReadyPromise
       if (this._p2pEnabled && sessionId) {
         this._initP2P(sessionId).catch((err) => {
           console.warn('p2p: init failed after match:', err);
         });
       }
+
+      pending.resolve(match);
     }
   }
 
@@ -984,6 +1010,22 @@ export class Client {
         sdp: offerSdp,
         fingerprint,
       });
+
+      // Wait for DC to open after offer is sent (DC was created inside createOffer).
+      // Signal _p2pReady only when DC is actually usable — rent() waits on this.
+      try {
+        await Promise.race([
+          transport.waitForDcOpen(),
+          new Promise<void>((_, reject) =>
+            setTimeout(() => reject(new Error('DC timeout')), 15000),
+          ),
+        ]);
+        this._p2pReady = true;
+      } catch {
+        console.warn('p2p: DC not open within 15s — P2P disabled, WS fallback');
+        await transport.close().catch(() => {});
+        this._p2p = null;
+      }
     } catch (err) {
       // Fallback: P2P failed, WS path continues to work
       if (this._p2p !== null) {
@@ -992,6 +1034,7 @@ export class Client {
       }
     } finally {
       this._p2pInitializing = false;
+      this._resolveP2pReady?.();
     }
   }
 
@@ -1075,6 +1118,21 @@ export class Client {
         sdp: answerSdp,
         fingerprint,
       });
+
+      // Wait for DC to open after answer is sent (DC was created inside createAnswer).
+      try {
+        await Promise.race([
+          transport.waitForDcOpen(),
+          new Promise<void>((_, reject) =>
+            setTimeout(() => reject(new Error('DC timeout')), 15000),
+          ),
+        ]);
+        this._p2pReady = true;
+      } catch {
+        console.warn('p2p: DC not open within 15s — P2P disabled, WS fallback');
+        await transport.close().catch(() => {});
+        this._p2p = null;
+      }
     } catch (err) {
       // Fallback: P2P failed, WS path continues to work
       if (this._p2p !== null) {
@@ -1083,6 +1141,7 @@ export class Client {
       }
     } finally {
       this._p2pInitializing = false;
+      this._resolveP2pReady?.();
     }
   }
 }

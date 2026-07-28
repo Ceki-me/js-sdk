@@ -32,12 +32,14 @@ beforeEach(() => {
   vi.useFakeTimers();
   // Disable humanizer via env
   process.env.CEKI_HUMAN_DISABLE = '1';
+  process.env.CEKI_FORCE_WS = '1';
 });
 
 afterEach(() => {
   vi.runOnlyPendingTimers();
   vi.useRealTimers();
   delete process.env.CEKI_HUMAN_DISABLE;
+  delete process.env.CEKI_FORCE_WS;
 });
 
 async function createClient(): Promise<Client> {
