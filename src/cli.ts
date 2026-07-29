@@ -127,27 +127,28 @@ async function cmdRent(args: string[]): Promise<void> {
 
   const apiKey = getApiKey();
 
-  // Auto-start daemon if CEKI_DAEMON_AUTOSTART=1 (python parity)
-  if (process.env.CEKI_DAEMON_AUTOSTART === '1' || process.env.CEKI_DAEMON_AUTOSTART === 'true') {
-    if (!(await isRunning())) {
-      const child = spawn(process.argv[0], [process.argv[1], 'daemon', 'start'], {
-        detached: true,
-        stdio: 'ignore',
-      });
-      child.unref();
-      // Poll until daemon is ready (up to 5s, python parity)
-      const deadline = Date.now() + 5000;
-      let ready = false;
-      while (Date.now() < deadline) {
-        if (await isRunning()) { ready = true; break; }
-        await new Promise((r) => setTimeout(r, 200));
-      }
-      if (!ready) {
-        err('daemon did not start in time', 'daemon');
-        process.exit(1);
-      }
+  // Always try to use daemon (python parity — persistent WS pool)
+  if (!(await isRunning())) {
+    // Daemon not running — try to spawn it in background
+    const child = spawn(process.argv[0], [process.argv[1], 'daemon', 'start'], {
+      detached: true,
+      stdio: 'ignore',
+    });
+    child.unref();
+    // Poll until daemon is ready (up to 5s)
+    const deadline = Date.now() + 5000;
+    let daemonReady = false;
+    while (Date.now() < deadline) {
+      if (await isRunning()) { daemonReady = true; break; }
+      await new Promise((r) => setTimeout(r, 200));
     }
-    // Route through daemon
+    if (!daemonReady) {
+      process.stderr.write('daemon did not start, falling back to one-shot\n');
+    }
+  }
+
+  // Try daemon route
+  if (await isRunning()) {
     try {
       const rentParams: Record<string, unknown> = { api_key: apiKey, schedule: scheduleId, mode };
       if (fingerprintFrom) rentParams.fingerprint_from = fingerprintFrom;
@@ -165,8 +166,8 @@ async function cmdRent(args: string[]): Promise<void> {
       });
       return;
     } catch (e) {
-      err((e as Error).message, 'daemon');
-      process.exit(6);
+      // Daemon error — transparent fallback to one-shot
+      process.stderr.write(`daemon error (${(e as Error).message}), falling back to one-shot\n`);
     }
   }
 
