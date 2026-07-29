@@ -376,7 +376,15 @@ export class Browser {
     if (clip) params.clip = clip;
 
     const result = await this.send({ method: 'Page.captureScreenshot', params }) as Record<string, unknown>;
-    const data = String(result?.data ?? '');
+    // Defensive: P2P DC path in some extension versions wraps the SW response
+    // inside result.result ({ result: { data } }) instead of flat { data }.
+    // Handle both formats for backward compat with deployed extensions.
+    const nested = (result?.result as Record<string, unknown> | undefined) ?? null;
+    const data = String(
+      (nested !== null && typeof nested.data === 'string')
+        ? nested.data
+        : result?.data ?? '',
+    );
 
     // encoding axis: 'png' format returns raw Buffer, 'base64' returns { data }
     if (format === 'png') {
@@ -877,7 +885,7 @@ export class Browser {
   // --- Internal handlers called by Client dispatch ---
 
   /** @internal */
-  _onCdpResponse(msg: Record<string, unknown>): void {
+  _onCdpResponse(msg: Record<string, unknown>, source?: 'ws' | 'dc'): void {
     const id = Number(msg.id);
     const pending = this._pendingCdp.get(id);
     if (!pending) return;
@@ -886,8 +894,14 @@ export class Browser {
     // channel), the relay also echoes a WS cdp_response that races ahead
     // but has empty result for large payloads (screenshot). Skip the WS echo
     // and wait for the DC response with full data.
+    //
+    // `source` is passed explicitly from the dispatcher:
+    //   - 'ws' — from WebSocket relay (WS echo, skip if DC-sent)
+    //   - 'dc' — from P2P DataChannel (always process)
+    // Fallback heuristic when source is omitted (defensive):
+    //   msg.type === 'cdp_response' — set only by relay WS echo
     const transport = pending._cdpTransport ?? 'ws';
-    const isFromWs = String(msg.type) === 'cdp_response' || msg.session_id != null;
+    const isFromWs = source === 'ws' || (!source && String(msg.type) === 'cdp_response');
     if (transport === 'dc' && isFromWs) {
       return;
     }

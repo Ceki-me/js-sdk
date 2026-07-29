@@ -189,6 +189,21 @@ describe('screenshot()', () => {
 
     expect(Buffer.isBuffer(result)).toBe(true);
   });
+
+  it('handles P2P nested response format (bugfix regression)', async () => {
+    // P2P DC path (extension p2p-manager.ts) wraps the SW response
+    // as result.result instead of flat result. The WS path extracts
+    // result.result correctly. This test verifies the SDK's screenshot()
+    // handles both formats for backward compat with deployed extensions.
+    const fakeB64 = Buffer.from('fake-png-data').toString('base64');
+    // Simulate the nested response from a buggy P2P extension:
+    //   { result: { result: { data: "base64..." } } }
+    autoRespondCdp({ result: { data: fakeB64 } });
+
+    const result = await browser.screenshot({ format: 'base64' });
+
+    expect((result as { data: string }).data).toBe(fakeB64);
+  });
 });
 
 describe('snapshot()', () => {

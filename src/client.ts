@@ -546,7 +546,7 @@ export class Client {
       case 'cdp_response':
         if (sessionId) {
           const browser = this._activeBrowsers.get(sessionId);
-          browser?._onCdpResponse(msg);
+          browser?._onCdpResponse(msg, 'ws');
         }
         break;
 
@@ -982,7 +982,7 @@ export class Client {
         const browser = this._activeBrowsers.get(sid);
         if (browser) {
           if (cmdId != null) {
-            browser._onCdpResponse(msg);
+            browser._onCdpResponse(msg, 'dc');
           } else if (method) {
             browser._onCdpEvent(msg);
           }
@@ -1089,7 +1089,7 @@ export class Client {
         const browser = this._activeBrowsers.get(sessionId);
         if (browser) {
           if (cmdId != null) {
-            browser._onCdpResponse(innerMsg);
+            browser._onCdpResponse(innerMsg, 'dc');
           } else if (method) {
             browser._onCdpEvent(innerMsg);
           }
