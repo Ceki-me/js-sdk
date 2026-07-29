@@ -488,6 +488,7 @@ export async function cmdContract(argv: string[]): Promise<number> {
         );
         return 0;
       }
+      case 'edit':
       case 'propose': {
         const eid = Number.parseInt(args.positional[0] ?? '', 10);
         if (Number.isNaN(eid)) {
@@ -530,48 +531,6 @@ export async function cmdContract(argv: string[]): Promise<number> {
             reviewer: flagStr(args, 'reviewer'),
             qa: flagStr(args, 'qa'),
             participants: extras.length > 0 ? extras : undefined,
-            settings,
-          }),
-        );
-        return 0;
-      }
-      case 'edit': {
-        // semantic sugar for propose — same flags, sugar alias
-        const eid = Number.parseInt(args.positional[0] ?? '', 10);
-        if (Number.isNaN(eid)) {
-          err('contract edit: eid required', 'args');
-          return 1;
-        }
-        const tagsEntries = flagList(args, 'tags');
-        let settings: ContractSettings | undefined;
-        if (tagsEntries.length > 0) {
-          try {
-            const tags = parseTagsSpec(tagsEntries.join(','));
-            settings = { tags };
-          } catch (e) {
-            err((e as Error).message, 'args');
-            return 1;
-          }
-        }
-        let extras: ParticipantSpec[] = [];
-        try {
-          extras = flagList(args, 'participant').map(parseParticipantSpec);
-        } catch (e) {
-          err((e as Error).message, 'args');
-          return 1;
-        }
-        dump(
-          await client.propose(eid, {
-            status: flagInt(args, 'status'),
-            label: flagStr(args, 'label'),
-            description: flagStr(args, 'desc'),
-            start: flagStr(args, 'start'),
-            end: flagStr(args, 'end'),
-            date: flagStr(args, 'date'),
-            duration: flagInt(args, 'duration'),
-            amount: flagInt(args, 'amount'),
-            currency: flagStr(args, 'currency'),
-            benefitable: flagStr(args, 'benefitable'),
             settings,
           }),
         );
