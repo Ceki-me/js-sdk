@@ -56,15 +56,22 @@ function loadConfig(): void {
   }
 }
 
-/** ConnectOptions builder — mirors python _connect_options(). */
-function connectOptions(): { reconnect: boolean } {
-  return { reconnect: true };
+/** ConnectOptions builder — mirrors python _connect_options(). */
+function connectOptions(): Partial<{ reconnect: boolean; apiUrl: string; relayUrl: string; chatUrl: string; basicAuth: [string, string] }> {
+  const opts: Partial<{ reconnect: boolean; apiUrl: string; relayUrl: string; chatUrl: string; basicAuth: [string, string] }> = { reconnect: true };
+  if (process.env.CEKI_API_URL) opts.apiUrl = process.env.CEKI_API_URL;
+  if (process.env.CEKI_RELAY_URL) opts.relayUrl = process.env.CEKI_RELAY_URL;
+  if (process.env.CEKI_CHAT_URL) opts.chatUrl = process.env.CEKI_CHAT_URL;
+  if (process.env.CEKI_BASIC_AUTH_USER && process.env.CEKI_BASIC_AUTH_PASS) {
+    opts.basicAuth = [process.env.CEKI_BASIC_AUTH_USER, process.env.CEKI_BASIC_AUTH_PASS];
+  }
+  return opts;
 }
 
 // ── Health check ──────────────────────────────────────────────────────────
 
 /** Check if daemon is running via PID file + /health endpoint. */
-export async function isRunning(): Promise<boolean> {
+export async function isRunning(port?: number): Promise<boolean> {
   if (!fs.existsSync(PID_FILE)) return false;
   try {
     const pid = Number.parseInt(fs.readFileSync(PID_FILE, 'utf-8').trim(), 10);
@@ -80,7 +87,7 @@ export async function isRunning(): Promise<boolean> {
   }
   // Verify via /health endpoint
   try {
-    const health = await checkHealth();
+    const health = await checkHealth(port);
     return health?.ok === true;
   } catch {
     fs.rmSync(PID_FILE, { force: true });
@@ -155,9 +162,15 @@ export class DaemonServer {
   async start(): Promise<void> {
     if (this._httpd) throw new Error('daemon already started');
 
-    // PID file — check existing
+    // PID file — check for stale PID
     if (fs.existsSync(PID_FILE)) {
-      throw new Error(`already running (pid ${fs.readFileSync(PID_FILE, 'utf-8').trim()})`);
+      if (!(await isRunning(this.port))) {
+        // Stale PID — clean up and continue
+        try { fs.rmSync(PID_FILE, { force: true }); } catch { /* ignore */ }
+        process.stderr.write('daemon: removed stale PID file\n');
+      } else {
+        throw new Error(`already running (pid ${fs.readFileSync(PID_FILE, 'utf-8').trim()})`);
+      }
     }
 
     return new Promise<void>((resolve, reject) => {
@@ -314,10 +327,12 @@ export class DaemonServer {
   /** POST /scroll */
   private async _handleScroll(params: Record<string, unknown>): Promise<void> {
     const browser = this._getBrowser(params.session_id as string);
+    const dx = params.dx as number | undefined ?? 0;
     const dy = params.dy as number | undefined ?? -300;
     await browser.scroll({
       x: Number(params.x ?? 0),
       y: Number(params.y ?? 0),
+      deltaX: dx,
       deltaY: dy,
       human: params.human as boolean | undefined,
     });
@@ -376,7 +391,7 @@ export class DaemonServer {
   private async _handleStop(params: Record<string, unknown>): Promise<void> {
     const sessionId = params.session_id as string;
     const entry = this._sessions.get(sessionId);
-    if (!entry) throw new Error(`session not found: ${sessionId}`);
+    if (!entry) throw new SessionNotFound(`session not found: ${sessionId}`);
     this._sessions.delete(sessionId);
     try {
       await entry.browser.close();
@@ -412,12 +427,14 @@ export class DaemonServer {
     // Wait for next message with timeout
     return new Promise((resolve) => {
       const timer = setTimeout(() => resolve(null), timeout * 1000);
-      browser.chat.onMessage((msg: unknown) => {
+      const handler = (msg: unknown): void => {
         clearTimeout(timer);
         const m = msg as Record<string, string>;
         browser._lastSeenTs = m.created_at;
+        browser.chat.offMessage(handler);
         resolve({ from: m.sender_id, text: m.text, ts: m.created_at });
-      });
+      };
+      browser.chat.onMessage(handler);
     });
   }
 
