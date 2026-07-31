@@ -118,6 +118,10 @@ export class BrowserChat {
     this._messageHandlers.push(cb);
   }
 
+  offMessage(cb: MessageHandler): void {
+    this._messageHandlers = this._messageHandlers.filter(h => h !== cb);
+  }
+
   onRead(cb: ReadHandler): void {
     this._readHandlers.push(cb);
   }

@@ -82,6 +82,8 @@ export interface RentOptions {
 export interface ScreenshotOptions {
   format?: 'base64' | 'png';
   fullPage?: boolean;
+  /** @internal CDP image format override */
+  _cdpFormat?: 'png' | 'jpeg';
 }
 
 export interface ScrollOptions {
