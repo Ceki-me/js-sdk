@@ -72,6 +72,12 @@ export class WebRTCTransport {
   private _iceServers: RTCIceServer[];
   private _iceTransportPolicy: 'all' | 'relay';
 
+  // Chunk reassembly buffer for large CDP responses sent over the DC.
+  // Keyed by chunkId -> { total, payloads: Map<seq, slice>, count }.
+  // Incomplete sets stay until the session ends (bounded by session lifetime);
+  // a lost chunk surfaces as an SDK-side timeout, existing mechanism.
+  private _pendingChunks: Map<string, { total: number; payloads: Map<number, string>; count: number }> = new Map();
+
   // Callbacks — set by consumer (client.ts)
   onIceCandidate: ((candidate: RTCIceCandidateInit) => void) | null = null;
   onCdpMessage: ((msg: Record<string, unknown>) => void) | null = null;
@@ -215,10 +221,71 @@ export class WebRTCTransport {
       } catch {
         return;
       }
+      // Chunked CDP responses (large messages from the extension) are
+      // reassembled transparently here — individual chunks are never
+      // forwarded to onCdpMessage.
+      if (data.type === 'cdp-response-chunk') {
+        const restored = this._bufferChunk(data);
+        if (restored === null) {
+          return; // not complete yet (or malformed)
+        }
+        if (this.onCdpMessage) {
+          this.onCdpMessage(restored);
+        }
+        return;
+      }
       if (this.onCdpMessage) {
         this.onCdpMessage(data);
       }
     });
+  }
+
+  /**
+   * Buffer one CDP chunk fragment and return the reassembled message.
+   *
+   * Returns the fully restored message once all ``total`` fragments for a
+   * ``chunkId`` have arrived (in any order); returns ``null`` otherwise.
+   * Malformed fragments are dropped — a lost fragment surfaces as an
+   * SDK-side timeout (existing mechanism).
+   */
+  private _bufferChunk(chunk: Record<string, unknown>): Record<string, unknown> | null {
+    const chunkId = chunk.chunkId;
+    const seq = chunk.seq;
+    const total = chunk.total;
+    const payload = chunk.payload;
+    if (typeof chunkId !== 'string' || typeof seq !== 'number' || typeof total !== 'number' || typeof payload !== 'string') {
+      return null;
+    }
+
+    let entry = this._pendingChunks.get(chunkId);
+    if (entry === undefined) {
+      entry = { total, payloads: new Map(), count: 0 };
+      this._pendingChunks.set(chunkId, entry);
+    }
+
+    if (!entry.payloads.has(seq)) {
+      entry.payloads.set(seq, payload);
+      entry.count += 1;
+    }
+
+    if (entry.count !== entry.total) {
+      return null;
+    }
+
+    this._pendingChunks.delete(chunkId);
+    const parts: string[] = [];
+    for (let i = 0; i < entry.total; i++) {
+      const part = entry.payloads.get(i);
+      if (part === undefined) {
+        return null;
+      }
+      parts.push(part);
+    }
+    try {
+      return JSON.parse(parts.join('')) as Record<string, unknown>;
+    } catch {
+      return null;
+    }
   }
 
   /**
