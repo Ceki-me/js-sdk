@@ -16,7 +16,6 @@ import * as http from 'node:http';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { fileURLToPath } from 'node:url';
 import { connect } from './client.js';
 import type { Client } from './client.js';
 import type { Browser } from './browser.js';
@@ -534,8 +533,7 @@ export function main(): void {
 }
 
 // Allow running directly: node dist/daemon.js
-const _daemonModulePath = fileURLToPath(import.meta.url);
 const _daemonMainPath = process.argv[1];
-if (_daemonMainPath && (_daemonMainPath === _daemonModulePath || _daemonMainPath.endsWith('/daemon.js'))) {
+if (_daemonMainPath && _daemonMainPath.endsWith('/daemon.js')) {
   main();
 }
