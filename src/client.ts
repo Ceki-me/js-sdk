@@ -990,6 +990,16 @@ export class Client {
         }
       };
 
+      // Wire capture-data callback → route video frames to the active browser.
+      // The extension intercepts Page.startScreencast and streams video-frame
+      // messages on the ceki-capture DC (not as CDP screencastFrame events).
+      transport.onCaptureData = (msg) => {
+        const browser = this._activeBrowsers.get(sessionId);
+        if (browser) {
+          browser._onCaptureData(msg);
+        }
+      };
+
       // Wire connection state callback for lifecycle monitoring
       transport.onConnectionState = (state) => {
         if (state === 'failed') {
@@ -1094,6 +1104,15 @@ export class Client {
           } else if (method) {
             browser._onCdpEvent(innerMsg);
           }
+        }
+      };
+
+      // Wire capture-data callback → route video frames to the active browser
+      // (same as _initP2P — video-frame arrives on the ceki-capture DC).
+      transport.onCaptureData = (innerMsg) => {
+        const browser = this._activeBrowsers.get(sessionId);
+        if (browser) {
+          browser._onCaptureData(innerMsg);
         }
       };
 

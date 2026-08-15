@@ -86,6 +86,19 @@ export interface ScreenshotOptions {
   _cdpFormat?: 'png' | 'jpeg';
 }
 
+/**
+ * Params for {@link Browser.startScreencast} — mirror CDP Page.startScreencast.
+ * Intersected with `Record<string, unknown>` so it flows into `send()`'s
+ * `params` slot without an index-signature cast.
+ */
+export type ScreencastOptions = Record<string, unknown> & {
+  maxWidth?: number;
+  maxHeight?: number;
+  quality?: number;
+  everyNthFrame?: number;
+  maxFrameRate?: number;
+};
+
 export interface ScrollOptions {
   x?: number;
   y?: number;

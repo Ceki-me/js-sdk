@@ -3,7 +3,7 @@ import { TimeoutError, SessionEnded, CaptchaError, CaptchaTimeoutError } from '.
 import { BrowserChat } from './chat.js';
 import { BrowserProfile } from './profile.js';
 import { saveSession, getLastSeenTs, updateLastSeenTs } from './state.js';
-import type { Match, ScreenshotOptions, ScrollOptions, Snapshot, ChatMessage, CaptchaOptions, CaptchaResult } from './types.js';
+import type { Match, ScreenshotOptions, ScrollOptions, Snapshot, ChatMessage, CaptchaOptions, CaptchaResult, ScreencastOptions } from './types.js';
 import type { Client } from './client.js';
 
 import { Humanizer } from './humanize/humanizer.js';
@@ -34,6 +34,7 @@ type EventHandler = (method: string, params: Record<string, unknown>) => void;
 type TabHandler = (url: string) => void;
 type VoidHandler = () => void;
 type UserEventHandler = (events: Record<string, unknown>[]) => void;
+type CaptureFrameHandler = (frame: Record<string, unknown>) => void;
 
 export class Browser {
   readonly sessionId: string;
@@ -64,6 +65,7 @@ export class Browser {
   private _disconnectHandlers: VoidHandler[] = [];
   private _reconnectHandlers: VoidHandler[] = [];
   private _userEventHandlers: UserEventHandler[] = [];
+  private _captureFrameHandlers: CaptureFrameHandler[] = [];
 
   /** @internal */
   get _apiKey(): string {
@@ -679,6 +681,39 @@ export class Browser {
     this._userEventHandlers.push(cb);
   }
 
+  /**
+   * Register a callback that receives screencast video frames.
+   *
+   * Frames arrive on the P2P `ceki-capture` data channel — the extension
+   * intercepts `Page.startScreencast` and streams frames there via its capture
+   * bridge instead of emitting CDP `Page.screencastFrame` events. Each
+   * callback is invoked with the raw capture frame dict:
+   *
+   *   { type: 'video-frame', data: '<base64 jpeg>', width?, height?, timestamp? }
+   *
+   * Frames that exceed the chunk threshold arrive as `capture-chunk`
+   * fragments and are reassembled transparently before delivery.
+   */
+  onCaptureFrame(cb: CaptureFrameHandler): void {
+    this._captureFrameHandlers.push(cb);
+  }
+
+  /**
+   * Start streaming video frames to the `onCaptureFrame` callbacks.
+   *
+   * Sends `Page.startScreencast` (intercepted by the extension and served by
+   * its capture bridge). Supported params mirror CDP:
+   * maxWidth, maxHeight, quality, everyNthFrame, maxFrameRate.
+   */
+  async startScreencast(params?: ScreencastOptions): Promise<unknown> {
+    return this.send({ method: 'Page.startScreencast', params: params ?? {} });
+  }
+
+  /** Stop the screencast stream (sends `Page.stopScreencast`). */
+  async stopScreencast(): Promise<unknown> {
+    return this.send({ method: 'Page.stopScreencast' });
+  }
+
   // --- Captcha / human action ---
 
   private _apiHeaders(): Record<string, string> {
@@ -924,6 +959,20 @@ export class Browser {
     for (const h of this._eventHandlers) {
       try {
         h(method, params);
+      } catch {
+        // handler errors should not break dispatch
+      }
+    }
+  }
+
+  /** @internal */
+  _onCaptureData(msg: Record<string, unknown>): void {
+    // Only video-frame messages are frames — video-stopped / screenshot
+    // messages that also travel on the capture DC are ignored here.
+    if (String(msg.type) !== 'video-frame') return;
+    for (const h of this._captureFrameHandlers) {
+      try {
+        h(msg);
       } catch {
         // handler errors should not break dispatch
       }

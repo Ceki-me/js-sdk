@@ -40,6 +40,68 @@ export interface RTCIceServer {
 }
 
 /**
+ * Reassembles `capture-chunk` fragments back into the original capture frame.
+ * Tolerant to out-of-order arrival (the capture DC is ordered:false): chunks
+ * are buffered per frameId until all `total` chunks have arrived, then the
+ * concatenated payload is parsed and returned. Stale incomplete frames are
+ * pruned after `staleMs` so a dropped chunk cannot leak memory forever.
+ * Mirrors the browser extension's CaptureChunkReassembler (rtc-bridge.ts).
+ */
+export class CaptureChunkReassembler {
+  private frames = new Map<
+    string,
+    { chunks: string[]; received: number; total: number; receivedAt: number }
+  >();
+  private readonly staleMs = 5000;
+
+  /** Feed one parsed capture-chunk message; returns the frame object when complete, else null. */
+  handle(msg: Record<string, unknown>): Record<string, unknown> | null {
+    const frameId = msg.frameId;
+    const seq = msg.seq;
+    const total = msg.total;
+    const payload = msg.payload;
+    if (
+      typeof frameId !== 'string' ||
+      typeof seq !== 'number' ||
+      !Number.isInteger(seq) ||
+      seq < 0 ||
+      typeof total !== 'number' ||
+      !Number.isInteger(total) ||
+      total <= 0 ||
+      seq >= total ||
+      typeof payload !== 'string'
+    ) {
+      return null;
+    }
+
+    const now = Date.now();
+    for (const [id, entry] of this.frames) {
+      if (now - entry.receivedAt > this.staleMs) this.frames.delete(id);
+    }
+
+    let entry = this.frames.get(frameId);
+    if (!entry) {
+      entry = { chunks: new Array<string>(total).fill(''), received: 0, total, receivedAt: now };
+      this.frames.set(frameId, entry);
+    }
+    if (entry.chunks[seq] === '') {
+      entry.chunks[seq] = payload;
+      entry.received++;
+    }
+
+    if (entry.received === total) {
+      this.frames.delete(frameId);
+      try {
+        return JSON.parse(entry.chunks.join('')) as Record<string, unknown>;
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  }
+}
+
+/**
  * WebRTC peer connection wrapper for P2P CDP transport.
  *
  * This is the js-sdk counterpart of the browser extension's
@@ -66,6 +128,7 @@ export interface RTCIceServer {
 export class WebRTCTransport {
   private _pc: RTCPeerConnection | null = null;
   private _cmdDc: RTCDataChannel | null = null;
+  private _captureDc: RTCDataChannel | null = null;
   private _localFingerprint: string | null = null;
   private _pendingRemoteCandidates: RTCIceCandidateInit[] = [];
   private _closed = false;
@@ -78,9 +141,14 @@ export class WebRTCTransport {
   // a lost chunk surfaces as an SDK-side timeout, existing mechanism.
   private _pendingChunks: Map<string, { total: number; payloads: Map<number, string>; count: number }> = new Map();
 
+  // Reassembles `capture-chunk` fragments on the ceki-capture DC back into
+  // full capture frames (video-frame / screenshot / video-stopped).
+  private _captureReassembler = new CaptureChunkReassembler();
+
   // Callbacks — set by consumer (client.ts)
   onIceCandidate: ((candidate: RTCIceCandidateInit) => void) | null = null;
   onCdpMessage: ((msg: Record<string, unknown>) => void) | null = null;
+  onCaptureData: ((msg: Record<string, unknown>) => void) | null = null;
   onConnectionState: ((state: string) => void) | null = null;
   onDataChannelState: ((state: string) => void) | null = null;
 
@@ -192,8 +260,8 @@ export class WebRTCTransport {
         this._cmdDc = channel;
         this._wireCmdDc(channel);
       } else if (channel.label === 'ceki-capture') {
-        // Agent doesn't process capture frames, but log it
-        // (no-op for agent)
+        this._captureDc = channel;
+        this._wireCaptureDc(channel);
       }
     });
 
@@ -236,6 +304,41 @@ export class WebRTCTransport {
       }
       if (this.onCdpMessage) {
         this.onCdpMessage(data);
+      }
+    });
+  }
+
+  /**
+   * Set up message/close handlers on the ceki-capture data channel.
+   *
+   * Mirror of ``_wireCmdDc`` for the capture channel: small frames (single
+   * ``video-frame`` / screenshot messages) are forwarded to ``onCaptureData``
+   * unchanged, while ``capture-chunk`` fragments are reassembled transparently
+   * before delivery.
+   */
+  private _wireCaptureDc(channel: RTCDataChannel): void {
+    channel.addEventListener('message', (event: MessageEvent) => {
+      let data: Record<string, unknown>;
+      try {
+        data = JSON.parse(event.data as string) as Record<string, unknown>;
+      } catch {
+        return;
+      }
+      // Chunked capture frames (large messages from the extension) are
+      // reassembled transparently here — individual chunks are never
+      // forwarded to onCaptureData.
+      if (data.type === 'capture-chunk') {
+        const restored = this._captureReassembler.handle(data);
+        if (restored === null) {
+          return; // not complete yet (or malformed)
+        }
+        if (this.onCaptureData) {
+          this.onCaptureData(restored);
+        }
+        return;
+      }
+      if (this.onCaptureData) {
+        this.onCaptureData(data);
       }
     });
   }
@@ -483,6 +586,14 @@ export class WebRTCTransport {
       }
       this._cmdDc = null;
     }
+    if (this._captureDc !== null) {
+      try {
+        this._captureDc.close();
+      } catch {
+        // Best-effort
+      }
+      this._captureDc = null;
+    }
     if (this._pc !== null) {
       try {
         this._pc.close();
@@ -494,6 +605,7 @@ export class WebRTCTransport {
     this._resetDcOpen();
     this._localFingerprint = null;
     this._pendingRemoteCandidates = [];
+    this._pendingChunks.clear();
   }
 
   private _cacheFingerprint(sdp: string): void {
