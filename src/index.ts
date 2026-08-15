@@ -33,6 +33,7 @@ export type {
   Profile,
   RentOptions,
   ScreenshotOptions,
+  ScreencastOptions,
   ScrollOptions,
   ProfileExportOptions,
   ChatHistoryOptions,
