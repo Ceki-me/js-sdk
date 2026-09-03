@@ -106,6 +106,20 @@ export interface ScrollOptions {
   deltaY?: number;
 }
 
+/**
+ * Object form of {@link Browser.click} — click the center of a matched element
+ * instead of raw viewport coordinates. Exactly one of `selector`/`text` must be set.
+ */
+export interface ClickTarget {
+  /** CSS selector of the element to click (resolved via `document.querySelector`). */
+  selector?: string;
+  /** Click the smallest visible element whose `textContent`/`innerText` contains
+   *  this text (case-insensitive, partial match). Input values are matched too. */
+  text?: string;
+  /** `false` bypasses the humanizer for this call only. */
+  human?: boolean;
+}
+
 export interface ProfileExportOptions {
   domains?: string[];
   includeSessionStorage?: boolean;

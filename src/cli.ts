@@ -16,7 +16,7 @@ import {
   TransportError,
 } from './errors.js';
 import { saveSession, loadSession, deleteSession, getLastSeenTs, updateLastSeenTs } from './state.js';
-import type { ConnectOptions, ChatMessage } from './types.js';
+import type { ConnectOptions, ChatMessage, ClickTarget } from './types.js';
 import type { Client } from './client.js';
 import type { Browser } from './browser.js';
 import { cmdContract, cmdHire, cmdTimelog } from './contract-cli.js';
@@ -353,31 +353,90 @@ async function cmdNavigate(sid: string, args: string[]): Promise<void> {
 }
 
 async function cmdClick(sid: string, args: string[]): Promise<void> {
-  const positional = args.filter((a) => !a.startsWith('--'));
-  const x = parseInt(positional[0], 10);
-  const y = parseInt(positional[1], 10);
-  if (isNaN(x) || isNaN(y)) {
-    err('x and y coordinates are required', 'args');
+  // task 7605 — element-form click: ceki click <sid> --selector CSS | --text TEXT.
+  // Backward compatible with the positional coordinate form <sid> <x> <y>.
+  const raw = parseNoHuman(args);
+  let selector: string | null = null;
+  let text: string | null = null;
+  const positional: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--no-human' || args[i] === '--raw') {
+      // handled by parseNoHuman
+    } else if (args[i] === '--selector' && args[i + 1]) {
+      selector = args[++i];
+    } else if (args[i] === '--text' && args[i + 1]) {
+      text = args[++i];
+    } else if (!args[i].startsWith('--')) {
+      positional.push(args[i]);
+    }
+  }
+  if (selector !== null && text !== null) {
+    err('click: pass either --selector or --text, not both', 'args');
     process.exit(1);
   }
-  const raw = parseNoHuman(args);
+  const targetMode = selector !== null || text !== null;
+  if (!targetMode) {
+    const x = parseInt(positional[0], 10);
+    const y = parseInt(positional[1], 10);
+    if (isNaN(x) || isNaN(y)) {
+      err('click needs coordinates (<sid> <x> <y>), --selector CSS, or --text TEXT', 'args');
+      process.exit(1);
+    }
+    if (await isRunning()) {
+      try {
+        await _daemonRequest('/click', { session_id: sid, x, y, human: !raw });
+        out({ ok: true, pointer: [x, y] });
+        return;
+      } catch (e) {
+        err((e as Error).message, 'daemon');
+        process.exit(6);
+      }
+    }
+    // Fallback to one-shot
+    const apiKey = getApiKey();
+    const [client, browser] = await resumeBrowser(apiKey, sid);
+    try {
+      await browser.click(x, y, raw ? { human: false } : undefined);
+      out({ ok: true, pointer: [x, y] });
+    } finally {
+      await closeClient(client);
+    }
+    return;
+  }
+  if (positional.length > 0) {
+    err('click: coordinates (x y) cannot be combined with --selector/--text', 'args');
+    process.exit(1);
+  }
+  const clickParams: Record<string, unknown> = { session_id: sid, human: !raw };
+  if (selector !== null) clickParams.selector = selector;
+  if (text !== null) clickParams.text = text;
   // Try daemon
   if (await isRunning()) {
     try {
-      await _daemonRequest('/click', { session_id: sid, x, y, human: !raw });
-      out({ ok: true, pointer: [x, y] });
+      await _daemonRequest('/click', clickParams);
+      out({ ok: true });
       return;
     } catch (e) {
-      err((e as Error).message, 'daemon');
+      const msg = (e as Error).message;
+      // Element-not-found should read as a normal failure (exit 1), not a daemon fault (6).
+      if (msg.includes('no element found')) {
+        err(msg, 'not_found');
+        process.exit(1);
+      }
+      err(msg, 'daemon');
       process.exit(6);
     }
   }
-  // Fallback to one-shot
+  // Fallback to one-shot — CekiBrowserError from resolve propagates to main() → exit 1.
   const apiKey = getApiKey();
   const [client, browser] = await resumeBrowser(apiKey, sid);
   try {
-    await browser.click(x, y, raw ? { human: false } : undefined);
-    out({ ok: true, pointer: [x, y] });
+    const target: ClickTarget = {};
+    if (selector !== null) target.selector = selector;
+    if (text !== null) target.text = text;
+    if (raw) target.human = false;
+    await browser.click(target);
+    out({ ok: true });
   } finally {
     await closeClient(client);
   }
@@ -1048,6 +1107,7 @@ Commands:
   screenshot <sid> -o PATH [--full] [--format png|jpeg]
   navigate <sid> <url> [--no-human|--raw]
   click <sid> <x> <y> [--no-human|--raw]
+  click <sid> --selector CSS | --text TEXT [--no-human|--raw]
   type <sid> "<text>" [--no-human|--raw]   (humanized by default)
   scroll <sid> <x> <y> <dy> [--no-human|--raw]
   switch-tab <sid>

@@ -1,9 +1,9 @@
 import mime from 'mime-types';
-import { TimeoutError, SessionEnded, CaptchaError, CaptchaTimeoutError } from './errors.js';
+import { CekiBrowserError, TimeoutError, SessionEnded, CaptchaError, CaptchaTimeoutError } from './errors.js';
 import { BrowserChat } from './chat.js';
 import { BrowserProfile } from './profile.js';
 import { saveSession, getLastSeenTs, updateLastSeenTs } from './state.js';
-import type { Match, ScreenshotOptions, ScrollOptions, Snapshot, ChatMessage, CaptchaOptions, CaptchaResult, ScreencastOptions } from './types.js';
+import type { Match, ScreenshotOptions, ScrollOptions, ClickTarget, Snapshot, ChatMessage, CaptchaOptions, CaptchaResult, ScreencastOptions } from './types.js';
 import type { Client } from './client.js';
 
 import { Humanizer } from './humanize/humanizer.js';
@@ -219,23 +219,149 @@ export class Browser {
     };
   }
 
-  async click(x: number, y: number, opts?: { human?: boolean }): Promise<void> {
-    const h = this._humanizeForCall(opts?.human);
+  // click(x, y) keeps the original coordinate signature; click({ selector }) /
+  // click({ text }) resolve an element's center via Runtime.evaluate first.
+  // task 7605 — click-selector support (CSS + visible text), python SDK parity.
+  async click(xOrTarget: number | ClickTarget, y?: number, opts?: { human?: boolean }): Promise<void> {
+    let cx: number;
+    let cy: number;
+    let human: boolean | undefined;
+
+    if (typeof xOrTarget === 'number') {
+      if (y === undefined) {
+        throw new TypeError('click() missing coordinates — pass (x, y) or { selector }/{ text }');
+      }
+      cx = xOrTarget;
+      cy = y;
+      human = opts?.human;
+    } else {
+      if (xOrTarget === undefined || xOrTarget === null) {
+        throw new TypeError('click() missing coordinates — pass (x, y) or { selector }/{ text }');
+      }
+      const { selector, text } = xOrTarget;
+      if (selector !== undefined && text !== undefined) {
+        throw new TypeError('click: pass either selector or text, not both');
+      }
+      if (selector === undefined && text === undefined) {
+        throw new TypeError('click: pass either selector or text');
+      }
+      if (y !== undefined) {
+        throw new TypeError('click: coordinates (x, y) cannot be combined with selector/text');
+      }
+      [cx, cy] = await this._resolveClickTarget(selector, text);
+      human = xOrTarget.human;
+    }
+
+    const h = this._humanizeForCall(human);
     if (h) await h.before('click');
 
     const rawFlag: Record<string, unknown> = h === null ? { _ceki_raw: true } : {};
     await this.send({
       method: 'Input.dispatchMouseEvent',
-      params: { type: 'mousePressed', x, y, button: 'left', clickCount: 1, ...rawFlag },
+      params: { type: 'mousePressed', x: cx, y: cy, button: 'left', clickCount: 1, ...rawFlag },
     });
     await this.send({
       method: 'Input.dispatchMouseEvent',
-      params: { type: 'mouseReleased', x, y, button: 'left', clickCount: 1 },
+      params: { type: 'mouseReleased', x: cx, y: cy, button: 'left', clickCount: 1 },
     });
 
-    this._lastPointer = [x, y];
+    this._lastPointer = [cx, cy];
 
     if (h) await h.after('click');
+  }
+
+  /**
+   * Resolve a click target (`selector` or `text`) to a viewport center point.
+   * Runs a single Runtime.evaluate in the page that returns a JSON string
+   * `{"x":..,"y":..}` or `{"error":"..."}` — same mechanism as `upload` /
+   * `paste`, no extension change needed. Mirrors the python SDK expression.
+   *
+   * Text mode scans visible elements for a case-insensitive partial match on
+   * `innerText` (falls back to `textContent`), matches INPUT `.value` too, and
+   * picks the smallest visible candidate. Selector mode clicks the first
+   * `document.querySelector` match. Both scroll the target into the viewport
+   * center and recompute the rect before returning.
+   *
+   * Throws CekiBrowserError when nothing matches / is not visible.
+   */
+  private async _resolveClickTarget(selector: string | undefined, text: string | undefined): Promise<[number, number]> {
+    let expr: string;
+    let desc: string;
+
+    if (text !== undefined) {
+      desc = `text ${JSON.stringify(text)}`;
+      const needleLit = JSON.stringify(text.toLowerCase());
+      expr = `(function(){
+        var needle = ${needleLit};
+        var all = document.querySelectorAll('body *');
+        var skip = {SCRIPT:1,STYLE:1,NOSCRIPT:1,TEMPLATE:1,META:1,LINK:1,TITLE:1,HEAD:1};
+        var best = null, bestArea = Infinity;
+        for (var i = 0; i < all.length; i++) {
+          var el = all[i];
+          if (skip[el.tagName]) continue;
+          var raw = el.textContent || '';
+          var isInput = el.tagName === 'INPUT';
+          if ((isInput ? (el.value || '') : raw).toLowerCase().indexOf(needle) === -1) continue;
+          var txt = isInput ? (el.value || '') : (el.innerText !== undefined ? (el.innerText || '') : raw);
+          if (txt.toLowerCase().indexOf(needle) === -1) continue;
+          var r = el.getBoundingClientRect();
+          if (r.width < 1 || r.height < 1) continue;
+          if (r.bottom <= 0 || r.top >= window.innerHeight || r.right <= 0 || r.left >= window.innerWidth) continue;
+          var cs;
+          try { cs = window.getComputedStyle(el); } catch (e) { continue; }
+          if (cs.display === 'none' || cs.visibility === 'hidden' || cs.visibility === 'collapse') continue;
+          var area = r.width * r.height;
+          if (area < bestArea) { bestArea = area; best = el; }
+        }
+        if (!best) return JSON.stringify({error: 'no visible element with text'});
+        try { best.scrollIntoView({block:'center', inline:'center'}); } catch (e) {}
+        var rb = best.getBoundingClientRect();
+        return JSON.stringify({x: Math.round(rb.left + rb.width / 2), y: Math.round(rb.top + rb.height / 2)});
+      })()`;
+    } else {
+      desc = `selector ${JSON.stringify(selector)}`;
+      const selLit = JSON.stringify(selector);
+      expr = `(function(){
+        try {
+          var el = document.querySelector(${selLit});
+          if (!el) return JSON.stringify({error: 'no element matched selector'});
+          var r0 = el.getBoundingClientRect();
+          if (r0.width < 1 || r0.height < 1) return JSON.stringify({error: 'element not visible'});
+          try { el.scrollIntoView({block:'center', inline:'center'}); } catch (e) {}
+          var r = el.getBoundingClientRect();
+          if (r.bottom <= 0 || r.top >= window.innerHeight || r.right <= 0 || r.left >= window.innerWidth)
+            return JSON.stringify({error: 'element is outside the viewport'});
+          return JSON.stringify({x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2)});
+        } catch (e) { return JSON.stringify({error: 'invalid selector: ' + e.message}); }
+      })()`;
+    }
+
+    const result = await this.send({
+      method: 'Runtime.evaluate',
+      params: { expression: expr, returnByValue: true },
+    }) as Record<string, unknown>;
+
+    const resultObj = result?.result as Record<string, unknown> | undefined;
+    const raw = resultObj?.value;
+    let parsed: unknown = null;
+    if (typeof raw === 'string') {
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        parsed = null;
+      }
+    } else {
+      parsed = raw;
+    }
+
+    if (!parsed || typeof parsed !== 'object') {
+      throw new CekiBrowserError(`click: could not resolve target for ${desc}`);
+    }
+    const p = parsed as Record<string, unknown>;
+    if (p.error) {
+      throw new CekiBrowserError(`click: no element found for ${desc} (${String(p.error)})`);
+    }
+    return [Math.round(Number(p.x)), Math.round(Number(p.y))];
   }
 
   private async _sendKeystroke(char: string): Promise<void> {

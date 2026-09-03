@@ -35,6 +35,7 @@ export type {
   ScreenshotOptions,
   ScreencastOptions,
   ScrollOptions,
+  ClickTarget,
   ProfileExportOptions,
   ChatHistoryOptions,
   CaptchaOptions,

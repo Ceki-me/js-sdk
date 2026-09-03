@@ -19,6 +19,7 @@ import * as os from 'node:os';
 import { connect } from './client.js';
 import type { Client } from './client.js';
 import type { Browser } from './browser.js';
+import type { ClickTarget } from './types.js';
 import { SessionNotFound } from './errors.js';
 
 const DAEMON_HOST = '127.0.0.1';
@@ -311,7 +312,18 @@ export class DaemonServer {
   /** POST /click */
   private async _handleClick(params: Record<string, unknown>): Promise<void> {
     const browser = this._getBrowser(params.session_id as string);
-    await browser.click(Number(params.x), Number(params.y), { human: params.human as boolean | undefined });
+    const human = params.human as boolean | undefined;
+    const selector = params.selector as string | undefined;
+    const text = params.text as string | undefined;
+    if (selector === undefined && text === undefined) {
+      // Coordinate form (backward compatible): click at x/y.
+      await browser.click(Number(params.x), Number(params.y), { human });
+      return;
+    }
+    // Element form: click({ selector }) / click({ text }) — resolve center first.
+    const target: ClickTarget = { selector, text };
+    if (human !== undefined) target.human = human;
+    await browser.click(target);
   }
 
   /** POST /type */

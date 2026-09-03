@@ -15,7 +15,7 @@ vi.mock('../src/state.js', () => ({
 
 import { Browser } from '../src/browser.js';
 import { Client } from '../src/client.js';
-import { SessionEnded } from '../src/errors.js';
+import { CekiBrowserError, SessionEnded } from '../src/errors.js';
 
 let client: Client;
 let ws: MockWebSocket;
@@ -59,6 +59,24 @@ function autoRespondCdp(result: unknown = {}) {
   });
 }
 
+/** Auto-respond per CDP method — Runtime.evaluate needs a payload, mouse events need {} */
+function autoRespondByMethod(getResult: (method: string) => Record<string, unknown>) {
+  const origSend = ws.send.bind(ws);
+  vi.spyOn(ws, 'send').mockImplementation((data: string) => {
+    origSend(data);
+    const msg = JSON.parse(data) as { type: string; id: number; method: string };
+    if (msg.type === 'cdp') {
+      queueMicrotask(() => {
+        ws.receive({ type: 'cdp_response', session_id: browser.sessionId, id: msg.id, result: getResult(msg.method) });
+      });
+    }
+  });
+}
+
+function cdpSent(method: string): Record<string, unknown>[] {
+  return ws.sent.filter((m) => m.type === 'cdp' && m.method === method) as Record<string, unknown>[];
+}
+
 describe('navigate()', () => {
   it('sends CDP Page.navigate via WS and receives response', async () => {
     autoRespondCdp({ url: 'https://example.com', frameId: 'F1' });
@@ -93,6 +111,81 @@ describe('click()', () => {
     expect((pressed!.params as Record<string, unknown>).x).toBe(100);
     expect((released!.params as Record<string, unknown>).y).toBe(200);
     expect(browser._lastPointer).toEqual([100, 200]);
+  });
+});
+
+describe('click({ selector } / { text }) — task 7605', () => {
+  it('resolves selector center via Runtime.evaluate then dispatches mouse events', async () => {
+    autoRespondByMethod((method) => {
+      if (method === 'Runtime.evaluate') return { result: { value: JSON.stringify({ x: 120, y: 45 }) } };
+      return {};
+    });
+
+    await browser.click({ selector: 'button[type=submit]' });
+
+    const evals = cdpSent('Runtime.evaluate');
+    expect(evals).toHaveLength(1);
+    const expr = (evals[0]!.params as Record<string, unknown>).expression as string;
+    expect(expr).toContain('document.querySelector');
+    expect(expr).toContain('"button[type=submit]"');
+    expect(expr).toContain('getBoundingClientRect');
+
+    const pressed = cdpSent('Input.dispatchMouseEvent').find(
+      m => (m.params as Record<string, unknown>).type === 'mousePressed',
+    );
+    const released = cdpSent('Input.dispatchMouseEvent').find(
+      m => (m.params as Record<string, unknown>).type === 'mouseReleased',
+    );
+    expect(pressed).toBeDefined();
+    expect(released).toBeDefined();
+    expect((pressed!.params as Record<string, unknown>).x).toBe(120);
+    expect((released!.params as Record<string, unknown>).y).toBe(45);
+    expect(browser._lastPointer).toEqual([120, 45]);
+  });
+
+  it('resolves visible text center with lowercased partial match expression', async () => {
+    autoRespondByMethod((method) => {
+      if (method === 'Runtime.evaluate') return { result: { value: JSON.stringify({ x: 88, y: 320 }) } };
+      return {};
+    });
+
+    await browser.click({ text: 'Sign Up' });
+
+    const evals = cdpSent('Runtime.evaluate');
+    expect(evals).toHaveLength(1);
+    const expr = (evals[0]!.params as Record<string, unknown>).expression as string;
+    expect(expr).toContain('"sign up"');
+    expect(expr).toContain('textContent');
+    expect(expr).toContain('scrollIntoView');
+
+    const released = cdpSent('Input.dispatchMouseEvent').find(
+      m => (m.params as Record<string, unknown>).type === 'mouseReleased',
+    );
+    expect((released!.params as Record<string, unknown>).y).toBe(320);
+  });
+
+  it('throws CekiBrowserError "no element found" when selector matches nothing', async () => {
+    autoRespondByMethod(() => ({ result: { value: JSON.stringify({ error: 'no element matched selector' }) } }));
+
+    await expect(browser.click({ selector: '#missing' })).rejects.toThrow(CekiBrowserError);
+    await expect(browser.click({ selector: '#missing' })).rejects.toThrow('no element found');
+  });
+
+  it('throws CekiBrowserError "no element found" when no visible element has the text', async () => {
+    autoRespondByMethod(() => ({ result: { value: JSON.stringify({ error: 'no visible element with text' }) } }));
+
+    await expect(browser.click({ text: 'No Such Button' })).rejects.toThrow('no element found');
+  });
+
+  it('validates argument combos', async () => {
+    // no target at all
+    await expect((browser.click as (arg?: unknown) => Promise<void>)(undefined)).rejects.toThrow(TypeError);
+    // empty object
+    await expect(browser.click({})).rejects.toThrow(TypeError);
+    // selector + text conflict
+    await expect(browser.click({ selector: '#a', text: 'b' })).rejects.toThrow(/selector or text/);
+    // object + stray coordinate
+    await expect(browser.click({ selector: '#a' }, 5)).rejects.toThrow(TypeError);
   });
 });
 
