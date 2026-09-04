@@ -249,6 +249,41 @@ describe('call unwrapping', () => {
   });
 });
 
+describe('raw() prompts routing', () => {
+  it('routes prompts/list as direct JSON-RPC method, returns full body', async () => {
+    const { http, cap } = makeHttp({
+      body: { jsonrpc: '2.0', id: 1, result: { prompts: [{ name: 'contract' }] } },
+    });
+    const c = new ContractClient({ endpoint: 'http://x/mcp/agent', token: 't', http });
+    const out = await c.raw('prompts/list', {});
+    expect(out).toEqual({
+      jsonrpc: '2.0',
+      id: 1,
+      result: { prompts: [{ name: 'contract' }] },
+    });
+    const body = lastBody(cap);
+    expect(body.method).toBe('prompts/list');
+    expect(body.params).toEqual({});
+  });
+  it('routes prompts/get with name + arguments', async () => {
+    const { http, cap } = makeHttp({ body: { result: { messages: [] } } });
+    const c = new ContractClient({ endpoint: 'http://x/mcp/agent', token: 't', http });
+    await c.raw('prompts/get', { name: 'contract', arguments: { contract_id: 14 } });
+    const body = lastBody(cap);
+    expect(body.method).toBe('prompts/get');
+    expect((body.params as Record<string, unknown>).name).toBe('contract');
+    expect((body.params as Record<string, unknown>).arguments).toEqual({ contract_id: 14 });
+  });
+  it('keeps non-prompts tools on tools/call', async () => {
+    const { http, cap } = makeHttp({ body: mcpText({ id: 1 }) });
+    const c = new ContractClient({ endpoint: 'http://x/mcp/agent', token: 't', http });
+    await c.raw('get-event', { contract_id: 14 });
+    const body = lastBody(cap);
+    expect(body.method).toBe('tools/call');
+    expect((body.params as Record<string, unknown>).name).toBe('get-event');
+  });
+});
+
 // ── tool calls + payloads ─────────────────────────────────────────
 
 describe('create()', () => {

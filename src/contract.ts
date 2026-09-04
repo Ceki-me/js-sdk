@@ -436,6 +436,11 @@ export class ContractClient {
   }
 
   async raw(tool: string, args: Record<string, unknown> = {}): Promise<unknown> {
+    // prompts/list and prompts/get are MCP protocol methods (JSON-RPC),
+    // not tools. Call rpc directly instead of tools/call.
+    if (tool.startsWith('prompts/')) {
+      return this.rpc(tool, args);
+    }
     return this.call(tool, args);
   }
 
