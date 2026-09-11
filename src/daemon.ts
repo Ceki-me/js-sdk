@@ -16,7 +16,6 @@ import * as http from 'node:http';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { fileURLToPath } from 'node:url';
 import { connect } from './client.js';
 import type { Client } from './client.js';
 import type { Browser } from './browser.js';
@@ -533,9 +532,7 @@ export function main(): void {
   });
 }
 
-// Allow running directly: node dist/daemon.js
-const _daemonModulePath = fileURLToPath(import.meta.url);
-const _daemonMainPath = process.argv[1];
-if (_daemonMainPath && (_daemonMainPath === _daemonModulePath || _daemonMainPath.endsWith('/daemon.js'))) {
-  main();
-}
+// Daemon is started only via `ceki daemon start` command (cmdDaemon in cli.ts).
+// No standalone dist/daemon.js entry point (tsup bundles daemon into cli.js).
+// Auto-main guard removed — it incorrectly triggered on every CLI invocation
+// because import.meta.url in the bundle points to cli.js.

@@ -1150,16 +1150,20 @@ async function main(): Promise<void> {
   const rest = argv.slice(1);
 
   if (command === 'contract') {
-    process.exit(await cmdContract(rest));
+    process.exitCode = await cmdContract(rest);
+    return;
   }
   if (command === 'hire') {
-    process.exit(await cmdHire(rest));
+    process.exitCode = await cmdHire(rest);
+    return;
   }
   if (command === 'timelog') {
-    process.exit(await cmdTimelog(rest));
+    process.exitCode = await cmdTimelog(rest);
+    return;
   }
   if (command === 'daemon') {
-    process.exit(await cmdDaemon(rest));
+    process.exitCode = await cmdDaemon(rest);
+    return;
   }
 
   switch (command) {
