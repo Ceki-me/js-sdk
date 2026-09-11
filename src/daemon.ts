@@ -208,92 +208,50 @@ export class DaemonServer {
     } catch {
       // ignore
     }
-    process.stderr.write('daemon stopped\n');
   }
 
-  // ── HTTP request handler ───────────────────────────────────────────────
+  // ── request handling ────────────────────────────────────────────────────
 
   private async _handleRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    if (req.method !== 'POST') {
+      sendJson(res, 405, { ok: false, error: 'method not allowed' });
+      return;
+    }
+    const url = new URL(req.url ?? '/', `http://${this.host}:${this.port}`);
+    const handlerName = _ENDPOINTS[url.pathname];
+    if (!handlerName) {
+      sendJson(res, 404, { ok: false, error: 'not found' });
+      return;
+    }
+    let body = '';
+    for await (const chunk of req) body += chunk;
+    let params: Record<string, unknown> = {};
+    try { params = JSON.parse(body); } catch { /* ignore */ }
     try {
-      if (req.method === 'GET' && req.url === '/health') {
-        sendJson(res, 200, { ok: true, pid: process.pid });
-        return;
-      }
-
-      if (req.method !== 'POST') {
-        sendJson(res, 405, { ok: false, error: 'method not allowed' });
-        return;
-      }
-
-      const pathname = req.url?.replace(/\/+$/, '') ?? '';
-      const handlerName = _ENDPOINTS[pathname];
-      if (!handlerName) {
-        sendJson(res, 404, { ok: false, error: `unknown endpoint: ${pathname}` });
-        return;
-      }
-
-      // Read body
-      const body = await new Promise<string>((resolve, reject) => {
-        const chunks: Buffer[] = [];
-        req.on('data', (chunk: Buffer) => chunks.push(chunk));
-        req.on('end', () => resolve(Buffer.concat(chunks).toString('utf-8')));
-        req.on('error', (err) => reject(err));
-      });
-
-      let params: Record<string, unknown>;
-      try {
-        params = JSON.parse(body || '{}');
-      } catch (e) {
-        sendJson(res, 400, { ok: false, error: `invalid JSON: ${(e as Error).message}` });
-        return;
-      }
-
-      // Call handler
-      const handler = (this as unknown as Record<string, HandlerFn>)[handlerName];
-      if (!handler) {
-        sendJson(res, 500, { ok: false, error: `handler not found: ${handlerName}` });
-        return;
-      }
-
-      const result = await handler.call(this, params);
+      const handler = (this as Record<string, HandlerFn>)[handlerName];
+      if (!handler) throw new Error(`handler ${handlerName} not implemented`);
+      const result = await handler(params);
       sendJson(res, 200, { ok: true, result });
     } catch (e) {
-      if (e instanceof SessionNotFound) {
-        sendJson(res, 404, { ok: false, error: (e as Error).message });
-      } else if (e instanceof Error) {
-        sendJson(res, 500, { ok: false, error: e.message });
-      } else {
-        sendJson(res, 500, { ok: false, error: String(e) });
-      }
+      sendJson(res, 500, { ok: false, error: (e as Error).message });
     }
   }
 
-  // ── Endpoint handlers ──────────────────────────────────────────────────
+  // ── endpoint handlers ───────────────────────────────────────────────────
 
-  /** Resolve a Browser by session_id from stored sessions. */
-  private _getBrowser(sessionId: string): Browser {
-    if (!sessionId) throw new Error('session_id required');
-    const entry = this._sessions.get(sessionId);
-    if (!entry) throw new SessionNotFound(`session not found: ${sessionId}`);
-    return entry.browser;
-  }
-
-  /** POST /rent — rent a new browser session. */
   private async _handleRent(params: Record<string, unknown>): Promise<Record<string, unknown>> {
-    const apiKey = (params.api_key as string | undefined) || process.env.CEKI_API_KEY;
-    if (!apiKey) throw new Error('CEKI_API_KEY not set');
-    const schedule = params.schedule;
-    if (!schedule) throw new Error('schedule (int) required');
-    const mode = (params.mode as string | undefined) || 'incognito';
+    const apiKey = params.api_key as string;
+    const schedule = params.schedule as number;
+    const mode = (params.mode as 'incognito' | 'main') ?? 'incognito';
     const fingerprintFrom = params.fingerprint_from as string | undefined;
-    let fpData: boolean | Record<string, unknown> = true;
-    if (fingerprintFrom) {
-      const profileData = JSON.parse(fs.readFileSync(fingerprintFrom, 'utf-8'));
-      fpData = (profileData as Record<string, unknown>).fingerprint as boolean | Record<string, unknown> || true;
-    }
 
     const client = await connect(apiKey, connectOptions());
-    const browser = await client.rent(Number(schedule), { mode, fingerprint: fpData } as never);
+    let fpData: boolean | Record<string, unknown> = true;
+    if (fingerprintFrom) {
+      const profile = JSON.parse(fs.readFileSync(fingerprintFrom, 'utf-8'));
+      fpData = profile.fingerprint || true;
+    }
+    const browser = await client.rent(schedule, { human: null, fingerprint: fpData, mode });
     this._sessions.set(browser.sessionId, { client, browser });
     return {
       session_id: browser.sessionId,
@@ -302,199 +260,184 @@ export class DaemonServer {
     };
   }
 
-  /** POST /navigate */
   private async _handleNavigate(params: Record<string, unknown>): Promise<void> {
-    const browser = this._getBrowser(params.session_id as string);
-    await browser.navigate(params.url as string, undefined, { human: params.human as boolean | undefined });
+    const sessionId = params.session_id as string;
+    const url = params.url as string;
+    const human = params.human as boolean ?? true;
+    const entry = this._sessions.get(sessionId);
+    if (!entry) throw new SessionNotFound(sessionId);
+    await entry.browser.navigate(url, 30000, human ? undefined : { human: false });
   }
 
-  /** POST /click */
-  private async _handleClick(params: Record<string, unknown>): Promise<void> {
-    const browser = this._getBrowser(params.session_id as string);
-    await browser.click(Number(params.x), Number(params.y), { human: params.human as boolean | undefined });
+  private async _handleClick(params: Record<string, unknown>): Promise<{ pointer: number[] }> {
+    const sessionId = params.session_id as string;
+    const x = params.x as number;
+    const y = params.y as number;
+    const human = params.human as boolean ?? true;
+    const entry = this._sessions.get(sessionId);
+    if (!entry) throw new SessionNotFound(sessionId);
+    await entry.browser.click(x, y, human ? undefined : { human: false });
+    return { pointer: [x, y] };
   }
 
-  /** POST /type */
   private async _handleType(params: Record<string, unknown>): Promise<void> {
-    const browser = this._getBrowser(params.session_id as string);
-    await browser.type(
-      params.text as string,
-      { selector: params.selector as string | undefined, human: params.human as boolean | undefined },
-    );
+    const sessionId = params.session_id as string;
+    const text = params.text as string;
+    const selector = params.selector as string | undefined;
+    const human = params.human as boolean ?? true;
+    const entry = this._sessions.get(sessionId);
+    if (!entry) throw new SessionNotFound(sessionId);
+    await entry.browser.type(text, human ? (selector ? { selector } : undefined) : { human: false });
   }
 
-  /** POST /scroll */
   private async _handleScroll(params: Record<string, unknown>): Promise<void> {
-    const browser = this._getBrowser(params.session_id as string);
-    const dx = params.dx as number | undefined ?? 0;
-    const dy = params.dy as number | undefined ?? -300;
-    await browser.scroll({
-      x: Number(params.x ?? 0),
-      y: Number(params.y ?? 0),
-      deltaX: dx,
-      deltaY: dy,
-      human: params.human as boolean | undefined,
-    });
+    const sessionId = params.session_id as string;
+    const x = params.x as number;
+    const y = params.y as number;
+    const dy = params.dy as number;
+    const human = params.human as boolean ?? true;
+    const entry = this._sessions.get(sessionId);
+    if (!entry) throw new SessionNotFound(sessionId);
+    await entry.browser.scroll({ x, y, deltaY: dy, human: human ? undefined : false });
   }
 
-  /** POST /switch-tab */
   private async _handleSwitchTab(params: Record<string, unknown>): Promise<void> {
-    const browser = this._getBrowser(params.session_id as string);
-    await browser.switchTab();
+    const sessionId = params.session_id as string;
+    const entry = this._sessions.get(sessionId);
+    if (!entry) throw new SessionNotFound(sessionId);
+    await entry.browser.switchTab();
   }
 
-  /** POST /configure */
   private async _handleConfigure(params: Record<string, unknown>): Promise<void> {
-    const browser = this._getBrowser(params.session_id as string);
-    const opts: Record<string, boolean> = {};
-    if (params.masking_mode !== undefined) opts.maskingMode = Boolean(params.masking_mode);
-    if (params.fingerprint !== undefined) opts.fingerprint = Boolean(params.fingerprint);
-    await browser.configure(opts as { maskingMode?: boolean; fingerprint?: boolean });
+    const sessionId = params.session_id as string;
+    const maskingMode = params.masking_mode as boolean | undefined;
+    const fingerprint = params.fingerprint as boolean | undefined;
+    const entry = this._sessions.get(sessionId);
+    if (!entry) throw new SessionNotFound(sessionId);
+    await entry.browser.configure({ maskingMode, fingerprint });
   }
 
-  /** POST /screenshot */
-  private async _handleScreenshot(params: Record<string, unknown>): Promise<Record<string, string>> {
-    const browser = this._getBrowser(params.session_id as string);
-    const full = Boolean(params.full ?? false);
-    const fmt = (params.format as string | undefined) === 'jpeg' ? 'jpeg' : 'png';
-    let data: Buffer | { data: string };
-    if (fmt === 'jpeg') {
-      // JPEG via _cdpFormat — returns {data: base64}
-      data = await browser.screenshot({ format: 'base64', fullPage: full, _cdpFormat: 'jpeg' });
+  private async _handleScreenshot(params: Record<string, unknown>): Promise<{ data: string }> {
+    const sessionId = params.session_id as string;
+    const full = params.full as boolean ?? false;
+    const format = (params.format as 'png' | 'jpeg') ?? 'png';
+    const entry = this._sessions.get(sessionId);
+    if (!entry) throw new SessionNotFound(sessionId);
+    let data: Buffer;
+    if (format === 'jpeg') {
+      const result = await entry.browser.screenshot({ format: 'base64', fullPage: full, _cdpFormat: 'jpeg' });
+      data = Buffer.from((result as { data: string }).data, 'base64');
     } else {
-      // PNG — returns Buffer
-      data = await browser.screenshot({ format: 'png', fullPage: full });
+      data = await entry.browser.screenshot({ format: 'png', fullPage: full }) as Buffer;
     }
-    if (data instanceof Buffer) {
-      return { data: data.toString('base64') };
-    }
-    return { data: (data as { data: string }).data };
+    return { data: data.toString('base64') };
   }
 
-  /** POST /snapshot */
   private async _handleSnapshot(params: Record<string, unknown>): Promise<Record<string, unknown>> {
-    const browser = this._getBrowser(params.session_id as string);
-    const snap = await browser.snapshot();
-    return {
-      screenshot: snap.screenshot,
-      chat: snap.chat.map((m) => ({
-        from: (m as unknown as Record<string, unknown>).sender_id,
-        text: (m as unknown as Record<string, unknown>).text,
-        ts: (m as unknown as Record<string, unknown>).created_at,
-      })),
-      ts: snap.ts.toISOString(),
-    };
+    const sessionId = params.session_id as string;
+    const entry = this._sessions.get(sessionId);
+    if (!entry) throw new SessionNotFound(sessionId);
+    const snap = await entry.browser.snapshot();
+    const chatList = snap.chat.map((m) => ({
+      from: m.sender_id,
+      text: m.text,
+      ts: m.created_at,
+    }));
+    return { screenshot: snap.screenshot, chat: chatList, ts: snap.ts.toISOString() };
   }
 
-  /** POST /stop */
   private async _handleStop(params: Record<string, unknown>): Promise<void> {
     const sessionId = params.session_id as string;
     const entry = this._sessions.get(sessionId);
-    if (!entry) throw new SessionNotFound(`session not found: ${sessionId}`);
+    if (!entry) throw new SessionNotFound(sessionId);
+    await entry.browser.close();
     this._sessions.delete(sessionId);
-    try {
-      await entry.browser.close();
-    } finally {
-      try {
-        await entry.client.disconnect();
-      } catch {
-        // ignore
-      }
-    }
   }
 
-  /** POST /chat/send */
-  private async _handleChatSend(params: Record<string, unknown>): Promise<Record<string, number | string | null | undefined>> {
-    const browser = this._getBrowser(params.session_id as string);
-    const result = await browser.chat.send(params.text as string);
+  private async _handleChatSend(params: Record<string, unknown>): Promise<{ message_id: string }> {
+    const sessionId = params.session_id as string;
+    const text = params.text as string;
+    const entry = this._sessions.get(sessionId);
+    if (!entry) throw new SessionNotFound(sessionId);
+    const result = await entry.browser.chat.send(text);
     return { message_id: result.messageId };
   }
 
-  /** POST /chat/next */
   private async _handleChatNext(params: Record<string, unknown>): Promise<Record<string, unknown> | null> {
-    const browser = this._getBrowser(params.session_id as string);
-    const timeout = Number(params.timeout ?? 60);
-    const since = (params.since as string | undefined) || browser._lastSeenTs || undefined;
-
-    const msgs = await browser.chat.history({ since, limit: 1 });
+    const sessionId = params.session_id as string;
+    const timeout = params.timeout as number ?? 60;
+    const since = params.since as string | undefined;
+    const entry = this._sessions.get(sessionId);
+    if (!entry) throw new SessionNotFound(sessionId);
+    const msgs = await entry.browser.chat.history({ since });
     if (msgs.length > 0) {
-      const m = msgs[0] as unknown as Record<string, string>;
-      browser._lastSeenTs = m.created_at;
+      const m = msgs[0];
       return { from: m.sender_id, text: m.text, ts: m.created_at };
     }
-
-    // Wait for next message with timeout
-    return new Promise((resolve) => {
-      const timer = setTimeout(() => resolve(null), timeout * 1000);
-      const handler = (msg: unknown): void => {
-        clearTimeout(timer);
-        const m = msg as Record<string, string>;
-        browser._lastSeenTs = m.created_at;
-        browser.chat.offMessage(handler);
-        resolve({ from: m.sender_id, text: m.text, ts: m.created_at });
-      };
-      browser.chat.onMessage(handler);
-    });
+    return null;
   }
 
-  /** POST /chat/history */
-  private async _handleChatHistory(params: Record<string, unknown>): Promise<unknown[]> {
-    const browser = this._getBrowser(params.session_id as string);
+  private async _handleChatHistory(params: Record<string, unknown>): Promise<Record<string, unknown>[]> {
+    const sessionId = params.session_id as string;
+    const limit = params.limit as number ?? 50;
     const since = params.since as string | undefined;
-    const limit = Number(params.limit ?? 50);
-    const msgs = await browser.chat.history({ since, limit });
-    return msgs.map((m: unknown) => {
-      const msg = m as Record<string, unknown>;
-      return { from: msg.sender_id, text: msg.text, ts: msg.created_at };
+    const entry = this._sessions.get(sessionId);
+    if (!entry) throw new SessionNotFound(sessionId);
+    const msgs = await entry.browser.chat.history({ since, limit });
+    return msgs.map((m) => ({ from: m.sender_id, text: m.text, ts: m.created_at }));
+  }
+
+  private async _handleCdp(params: Record<string, unknown>): Promise<unknown> {
+    const sessionId = params.session_id as string;
+    const method = params.method as string;
+    const cdpParams = params.params as Record<string, unknown> ?? {};
+    const entry = this._sessions.get(sessionId);
+    if (!entry) throw new SessionNotFound(sessionId);
+    return await entry.browser.send({ method, params: cdpParams });
+  }
+
+  private async _handleProfileExport(params: Record<string, unknown>): Promise<unknown> {
+    const sessionId = params.session_id as string;
+    const noSessionStorage = params.no_session_storage as boolean ?? false;
+    const domains = params.domains as string | undefined;
+    const entry = this._sessions.get(sessionId);
+    if (!entry) throw new SessionNotFound(sessionId);
+    return await entry.browser.profile.export({
+      domains: domains?.split(',').map(d => d.trim()),
+      includeSessionStorage: !noSessionStorage,
     });
   }
 
-  /** POST /cdp */
-  private async _handleCdp(params: Record<string, unknown>): Promise<unknown> {
-    const browser = this._getBrowser(params.session_id as string);
-    const method = params.method as string;
-    if (!method) throw new Error('method required');
-    const cdpParams = (params.params as Record<string, unknown> | undefined) || {};
-    return await browser.send({ method, params: cdpParams });
-  }
-
-  /** POST /profile/export */
-  private async _handleProfileExport(params: Record<string, unknown>): Promise<Record<string, unknown>> {
-    const browser = this._getBrowser(params.session_id as string);
-    const domains = params.domains
-      ? (params.domains as string).split(',').map((d: string) => d.trim())
-      : undefined;
-    const includeSessionStorage = !params.no_session_storage;
-    return await browser.profile.export({ domains, includeSessionStorage }) as Record<string, unknown>;
-  }
-
-  /** POST /profile/import */
   private async _handleProfileImport(params: Record<string, unknown>): Promise<void> {
-    const browser = this._getBrowser(params.session_id as string);
-    const profile = params.profile;
-    if (!profile) throw new Error('profile data required');
-    await browser.profile.import(profile as Record<string, unknown>);
+    const sessionId = params.session_id as string;
+    const profile = params.profile as Record<string, unknown>;
+    const entry = this._sessions.get(sessionId);
+    if (!entry) throw new SessionNotFound(sessionId);
+    await entry.browser.profile.import(profile);
   }
 
-  /** POST /upload */
-  private async _handleUpload(params: Record<string, unknown>): Promise<Record<string, unknown>> {
-    const browser = this._getBrowser(params.session_id as string);
+  private async _handleUpload(params: Record<string, unknown>): Promise<unknown> {
+    const sessionId = params.session_id as string;
     const selector = params.selector as string;
-    if (!selector) throw new Error('selector required');
     const filePath = params.file_path as string;
-    if (!filePath) throw new Error('file_path required');
     const filename = params.filename as string | undefined;
     const mimeType = params.mime_type as string | undefined;
-    return await browser.upload(selector, filePath, filename, mimeType) as Record<string, unknown>;
+    const entry = this._sessions.get(sessionId);
+    if (!entry) throw new SessionNotFound(sessionId);
+    return await entry.browser.upload(selector, filePath, filename, mimeType);
   }
 
-  /** POST /request-captcha */
   private async _handleRequestCaptcha(params: Record<string, unknown>): Promise<Record<string, unknown>> {
-    const browser = this._getBrowser(params.session_id as string);
-    const result = await browser.requestCaptcha({
-      acceptanceTimeout: Number(params.acceptance ?? 60),
-      completionTimeout: Number(params.completion ?? 120),
-      autoAccept: !params.manual,
+    const sessionId = params.session_id as string;
+    const acceptance = params.acceptance as number ?? 60;
+    const completion = params.completion as number ?? 120;
+    const manual = params.manual as boolean ?? false;
+    const entry = this._sessions.get(sessionId);
+    if (!entry) throw new SessionNotFound(sessionId);
+    const result = await entry.browser.requestCaptcha({
+      acceptanceTimeout: acceptance,
+      completionTimeout: completion,
+      autoAccept: !manual,
     });
     return {
       solved: result.solved,
@@ -532,8 +475,7 @@ export function main(): void {
   });
 }
 
-// Allow running directly: node dist/daemon.js
-const _daemonMainPath = process.argv[1];
-if (_daemonMainPath && _daemonMainPath.endsWith('/daemon.js')) {
-  main();
-}
+// Daemon is started only via `ceki daemon start` command (cmdDaemon in cli.ts).
+// No standalone dist/daemon.js entry point (tsup bundles daemon into cli.js).
+// Auto-main guard removed — it incorrectly triggered on every CLI invocation
+// because import.meta.url in the bundle points to cli.js.
