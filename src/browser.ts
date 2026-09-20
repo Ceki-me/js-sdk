@@ -35,6 +35,7 @@ type TabHandler = (url: string) => void;
 type VoidHandler = () => void;
 type UserEventHandler = (events: Record<string, unknown>[]) => void;
 type CaptureFrameHandler = (frame: Record<string, unknown>) => void;
+type DownloadHandler = (event: Record<string, unknown>) => void;
 
 export class Browser {
   readonly sessionId: string;
@@ -66,6 +67,7 @@ export class Browser {
   private _reconnectHandlers: VoidHandler[] = [];
   private _userEventHandlers: UserEventHandler[] = [];
   private _captureFrameHandlers: CaptureFrameHandler[] = [];
+  private _downloadHandlers: DownloadHandler[] = [];
 
   /** @internal */
   get _apiKey(): string {
@@ -681,7 +683,7 @@ export class Browser {
     this._userEventHandlers.push(cb);
   }
 
-  /**
+/**
    * Register a callback that receives screencast video frames.
    *
    * Frames arrive on the P2P `ceki-capture` data channel — the extension
@@ -712,6 +714,11 @@ export class Browser {
   /** Stop the screencast stream (sends `Page.stopScreencast`). */
   async stopScreencast(): Promise<unknown> {
     return this.send({ method: 'Page.stopScreencast' });
+  }
+
+  /** Register a callback for download events (download-meta / download-chunk). */
+  onDownload(cb: DownloadHandler): void {
+    this._downloadHandlers.push(cb);
   }
 
   // --- Captcha / human action ---
@@ -956,6 +963,21 @@ export class Browser {
   _onCdpEvent(msg: Record<string, unknown>): void {
     const method = String(msg.method ?? '');
     const params = (msg.params ?? {}) as Record<string, unknown>;
+
+    // task 10135 — surface Browser.downloadWillBegin / Browser.downloadProgress
+    // to consumers via onDownload(). Also forward synthetic Ceki.downloadMeta /
+    // Ceki.downloadChunk (body-transfer chunks sent by extension).
+    if (
+      method === 'Browser.downloadWillBegin' ||
+      method === 'Browser.downloadProgress' ||
+      method === 'Ceki.downloadMeta' ||
+      method === 'Ceki.downloadChunk'
+    ) {
+      for (const h of this._downloadHandlers) {
+        try { h(params); } catch { /* handler errors should not break dispatch */ }
+      }
+    }
+
     for (const h of this._eventHandlers) {
       try {
         h(method, params);

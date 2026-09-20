@@ -146,3 +146,30 @@ export interface CaptchaResult {
   acceptWork: () => Promise<void>;
   rejectWork: (reason?: string) => Promise<void>;
 }
+
+export interface DownloadMeta {
+  guid: string;
+  url: string;
+  suggestedFilename: string;
+  totalBytes: number;
+  mimeType: string;
+}
+
+export interface DownloadChunk {
+  guid: string;
+  seq: number;
+  total: number;
+  payload: string;
+}
+
+export interface DownloadEvent {
+  type: 'download-meta' | 'download-chunk';
+  guid: string;
+  url?: string;
+  suggestedFilename?: string;
+  totalBytes?: number;
+  mimeType?: string;
+  seq?: number;
+  total?: number;
+  payload?: string;
+}
