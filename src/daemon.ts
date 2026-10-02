@@ -244,6 +244,7 @@ export class DaemonServer {
     const schedule = params.schedule as number;
     const mode = (params.mode as 'incognito' | 'main') ?? 'incognito';
     const fingerprintFrom = params.fingerprint_from as string | undefined;
+    const vaultRaw = params.vault as string | number | undefined;
 
     const client = await connect(apiKey, connectOptions());
     let fpData: boolean | Record<string, unknown> = true;
@@ -251,12 +252,18 @@ export class DaemonServer {
       const profile = JSON.parse(fs.readFileSync(fingerprintFrom, 'utf-8'));
       fpData = profile.fingerprint || true;
     }
-    const browser = await client.rent(schedule, { human: null, fingerprint: fpData, mode });
+    let vault: number | Record<string, unknown> | undefined;
+    if (vaultRaw != null && String(vaultRaw).trim() !== '') {
+      const asNum = Number(vaultRaw);
+      vault = Number.isNaN(asNum) ? (JSON.parse(String(vaultRaw)) as Record<string, unknown>) : asNum;
+    }
+    const browser = await client.rent(schedule, { human: null, fingerprint: fpData, mode, vault });
     this._sessions.set(browser.sessionId, { client, browser });
     return {
       session_id: browser.sessionId,
       chat_topic_id: browser.chatTopicId,
       schedule_id: browser.scheduleId,
+      vault_session_id: browser._vaultSessionId,
     };
   }
 

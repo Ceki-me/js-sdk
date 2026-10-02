@@ -19,6 +19,7 @@ import { Browser } from './browser.js';
 import { Humanizer } from './humanize/humanizer.js';
 import { HumanProfile } from './humanize/profile.js';
 import { WebRTCTransport } from './webrtc.js';
+import { ClientVault } from './vault.js';
 import type { RTCIceServer } from './webrtc.js';
 import type { ConnectOptions, BrowserOption, Match, RentOptions, SessionInfo } from './types.js';
 
@@ -58,6 +59,8 @@ export class Client {
   /** @internal */ _basicAuth: [string, string] | undefined;
   /** @internal */ _activeBrowsers: Map<string, Browser> = new Map();
   /** @internal */ _p2p: WebRTCTransport | null = null;
+  /** @internal — HTTP vault surface, plain fetch (no relay) */
+  readonly vault: ClientVault;
 
   private _ws: WebSocket | null = null;
   /** @internal */ _apiUrl: string;
@@ -104,6 +107,7 @@ export class Client {
     this._p2pReadyPromise = new Promise<void>((resolve) => {
       this._resolveP2pReady = resolve;
     });
+    this.vault = new ClientVault(this);
   }
 
   /** Factory: create client and connect */
@@ -236,10 +240,25 @@ export class Client {
     const humanizer = this._resolveHumanizer(opts);
     const browser = new Browser(this, match, humanizer);
     this._activeBrowsers.set(browser.sessionId, browser);
+
+    let restoredVault = false;
+    // Vault profile restore — do it first so the masking/fingerprint branches
+    // below can't clobber a profile-supplied fingerprint. Profile cookies/
+    // storage go through session.configure(profile=...) (Vault 3+ extension);
+    // a raw envelope dict is applied as-is, an id is fetched and bound so a
+    // later browser.vault.save() PUTs back onto it.
+    if (opts?.vault != null) {
+      try {
+        await browser.vault.restore(opts.vault);
+        restoredVault = true;
+      } catch (err) {
+        console.warn('vault: restore failed on rent', err);
+      }
+    }
     if (opts?.maskingMode) {
       browser.configure({ maskingMode: true }).catch(() => {});
     }
-    if (opts?.fingerprint) {
+    if (opts?.fingerprint && !restoredVault) {
       browser.configure({ fingerprint: opts.fingerprint }).catch(() => {});
     }
     return browser;

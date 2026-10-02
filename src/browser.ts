@@ -2,6 +2,7 @@ import mime from 'mime-types';
 import { TimeoutError, SessionEnded, CaptchaError, CaptchaTimeoutError } from './errors.js';
 import { BrowserChat } from './chat.js';
 import { BrowserProfile } from './profile.js';
+import { BrowserVault } from './vault.js';
 import { saveSession, getLastSeenTs, updateLastSeenTs } from './state.js';
 import type { Match, ScreenshotOptions, ScrollOptions, Snapshot, ChatMessage, CaptchaOptions, CaptchaResult, ScreencastOptions } from './types.js';
 import type { Client } from './client.js';
@@ -47,9 +48,12 @@ export class Browser {
 
   readonly chat: BrowserChat;
   readonly profile: BrowserProfile;
+  readonly vault: BrowserVault;
 
   /** @internal */ _client: Client;
   /** @internal */ _humanizer: Humanizer | null = null;
+  /** @internal — bound vault session id when rented with vault=<id> or restored */
+  _vaultSessionId: number | null = null;
   /** @internal — once DC fails, stay on WS for this session */
   _p2pFallback = false;
   /** @internal */ _lastPointer: [number, number] | null = null;
@@ -95,6 +99,7 @@ export class Browser {
 
     this.chat = new BrowserChat(this);
     this.profile = new BrowserProfile(this);
+    this.vault = new BrowserVault(this);
 
     this._ended = new Promise<string>((resolve) => {
       this._resolveEnded = resolve;
@@ -622,13 +627,18 @@ export class Browser {
     this._sendRaw({ type: 'switch_tab', session_id: this.sessionId });
   }
 
-  async configure(opts: { maskingMode?: boolean; fingerprint?: boolean | Record<string, unknown> }): Promise<void> {
+  async configure(opts: {
+    maskingMode?: boolean;
+    fingerprint?: boolean | Record<string, unknown>;
+    profile?: import('./types.js').VaultProfile;
+  }): Promise<void> {
     const msg: Record<string, unknown> = {
       type: 'session.configure',
       session_id: this.sessionId,
     };
     if (opts.maskingMode !== undefined) msg.masking_mode = opts.maskingMode;
     if (opts.fingerprint !== undefined) msg.fingerprint = opts.fingerprint;
+    if (opts.profile !== undefined) msg.profile = opts.profile;
     this._sendRaw(msg);
   }
 
