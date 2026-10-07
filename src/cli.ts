@@ -1351,7 +1351,7 @@ async function main(): Promise<void> {
     return;
   }
   if (command === 'daemon') {
-    process.exitCode = await cmdDaemon(rest);
+    await cmdDaemon(rest);
     return;
   }
   if (command === 'vault') {

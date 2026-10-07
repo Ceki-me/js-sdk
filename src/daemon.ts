@@ -20,6 +20,7 @@ import { connect } from './client.js';
 import type { Client } from './client.js';
 import type { Browser } from './browser.js';
 import { SessionNotFound } from './errors.js';
+import type { Profile } from './types.js';
 
 const DAEMON_HOST = '127.0.0.1';
 const PID_FILE = '/tmp/ceki-daemon.pid';
@@ -228,7 +229,7 @@ export class DaemonServer {
     let params: Record<string, unknown> = {};
     try { params = JSON.parse(body); } catch { /* ignore */ }
     try {
-      const handler = (this as Record<string, HandlerFn>)[handlerName];
+      const handler = (this as unknown as Record<string, HandlerFn>)[handlerName];
       if (!handler) throw new Error(`handler ${handlerName} not implemented`);
       const result = await handler(params);
       sendJson(res, 200, { ok: true, result });
@@ -417,9 +418,12 @@ export class DaemonServer {
 
   private async _handleProfileImport(params: Record<string, unknown>): Promise<void> {
     const sessionId = params.session_id as string;
-    const profile = params.profile as Record<string, unknown>;
+    const profile = params.profile as Profile;
     const entry = this._sessions.get(sessionId);
     if (!entry) throw new SessionNotFound(sessionId);
+    // profile.ts import() validates schema_version (1|2) and throws a clear
+    // error otherwise; pass the raw record through so the browser-side
+    // validation (not a TS cast) is the source of truth.
     await entry.browser.profile.import(profile);
   }
 
