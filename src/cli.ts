@@ -3,7 +3,7 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { connect } from './client.js';
+import { connect, Client } from './client.js';
 import {
   CekiBrowserError,
   AuthError,
@@ -17,7 +17,6 @@ import {
 } from './errors.js';
 import { saveSession, loadSession, deleteSession, getLastSeenTs, updateLastSeenTs } from './state.js';
 import type { ConnectOptions, ChatMessage } from './types.js';
-import type { Client } from './client.js';
 import type { Browser } from './browser.js';
 import { cmdContract, cmdHire, cmdTimelog } from './contract-cli.js';
 import { DaemonServer, checkHealth, isRunning } from './daemon.js';
@@ -107,10 +106,12 @@ function parseBool(val: string): boolean {
 async function cmdRent(args: string[]): Promise<void> {
   let scheduleId: number | null = null;
   let fingerprintFrom: string | null = null;
+  let vault: string | null = null;
   let mode: 'incognito' | 'main' = 'incognito';
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--schedule' && args[i + 1]) scheduleId = parseInt(args[++i], 10);
     if (args[i] === '--fingerprint-from' && args[i + 1]) fingerprintFrom = args[++i];
+    if (args[i] === '--vault' && args[i + 1]) vault = args[++i];
     if (args[i] === '--mode' && args[i + 1]) {
       const v = args[++i];
       if (v !== 'incognito' && v !== 'main') {
@@ -152,6 +153,7 @@ async function cmdRent(args: string[]): Promise<void> {
     try {
       const rentParams: Record<string, unknown> = { api_key: apiKey, schedule: scheduleId, mode };
       if (fingerprintFrom) rentParams.fingerprint_from = fingerprintFrom;
+      if (vault) rentParams.vault = vault;
       const result = await _daemonRequest('/rent', rentParams) as Record<string, unknown>;
       saveSession(result.session_id as string, {
         session_id: result.session_id as string,
@@ -177,10 +179,11 @@ async function cmdRent(args: string[]): Promise<void> {
     const profile = JSON.parse(fs.readFileSync(fingerprintFrom, 'utf-8'));
     fpData = profile.fingerprint || true;
   }
+  const vaultArg = vault ? (Number.isNaN(Number(vault)) ? JSON.parse(vault) : Number(vault)) : undefined;
 
   const client = await connect(apiKey, connectOptions());
   try {
-    const browser = await client.rent(scheduleId, { human: null, fingerprint: fpData, mode });
+    const browser = await client.rent(scheduleId, { human: null, fingerprint: fpData, mode, vault: vaultArg });
     saveSession(browser.sessionId, {
       session_id: browser.sessionId,
       chat_topic_id: browser.chatTopicId,
@@ -191,6 +194,7 @@ async function cmdRent(args: string[]): Promise<void> {
       session_id: browser.sessionId,
       chat_topic_id: browser.chatTopicId,
       schedule_id: browser.scheduleId,
+      vault_session_id: browser._vaultSessionId,
     });
   } finally {
     await closeClient(client);
@@ -961,6 +965,184 @@ async function cmdUpload(sid: string, args: string[]): Promise<void> {
   }
 }
 
+// ── Vault commands (plain HTTP, no relay session) ─────────────────────────
+
+/**
+ * `ceki vault …` — list/get/save/apply/delete vault sessions.
+ * All actions talk straight to the API over HTTPS (no relay/ws). The vault
+ * routes resolve the token to a user (Sanctum) — pass a user token, not an
+ * agent key, when the backend rejects `ag_` keys.
+ */
+async function cmdVault(args: string[]): Promise<void> {
+  const action = args[0];
+  if (!action) {
+    err('Usage: ceki vault list|get|save|apply|delete ...', 'args');
+    process.exit(1);
+  }
+  const rest = args.slice(1);
+
+  const apiKey = getApiKey();
+  // Vault CRUD is plain HTTPS — construct a Client directly (no relay/WS).
+  // Only the browser-requiring actions (save --session / apply) connect WS.
+  const client = new Client(apiKey, connectOptions());
+
+  const parseFlag = (name: string): string | null => {
+    for (let i = 0; i < rest.length; i++) {
+      if (rest[i] === name && rest[i + 1]) return rest[++i];
+    }
+    return null;
+  };
+  const hasFlag = (name: string): boolean => rest.includes(name);
+  // Lazily-connected client for the actions that drive a live browser.
+  let liveClient: Client | null = null;
+  const ensureLiveClient = async (): Promise<Client> => {
+    if (!liveClient) {
+      liveClient = await connect(apiKey, connectOptions());
+    }
+    return liveClient;
+  };
+
+  try {
+    switch (action) {
+      case 'list': {
+        let perPage = 20;
+        let asJson = hasFlag('--json');
+        const ppRaw = parseFlag('--per-page');
+        if (ppRaw) perPage = Number.parseInt(ppRaw, 10);
+        const sessions = await client.vault.list({ per_page: perPage });
+        if (asJson) {
+          out(sessions.map(s => ({
+            id: s.id, label: s.label, urls: s.urls, updated_at: s.updatedAt,
+          })));
+        } else {
+          if (sessions.length === 0) {
+            process.stdout.write('No vault sessions.\n');
+          } else {
+            for (const s of sessions) {
+              const urls = (s.urls ?? []).slice(0, 3).join(', ');
+              process.stdout.write(`#${s.id}  ${s.label ?? '(no label)'}  [${urls}]\n`);
+            }
+          }
+        }
+        break;
+      }
+      case 'get': {
+        const idRaw = rest[0];
+        const id = idRaw != null ? Number.parseInt(idRaw, 10) : NaN;
+        if (Number.isNaN(id)) {
+          err('vault get needs <id>', 'args');
+          process.exit(1);
+        }
+        const session = await client.vault.get(id);
+        if (hasFlag('--json')) {
+          out({ id: session.id, label: session.label, data: session.data, urls: session.urls });
+        } else {
+          const outPath = parseFlag('-o') ?? parseFlag('--output');
+          if (outPath) {
+            fs.writeFileSync(outPath, JSON.stringify(session.data, null, 2), 'utf-8');
+            out({ ok: true, id: session.id, path: outPath });
+          } else {
+            out({ id: session.id, label: session.label, data: session.data, urls: session.urls });
+          }
+        }
+        break;
+      }
+      case 'save': {
+        // ceki vault save FILE [--id N] [--label L]
+        // ceki vault save --session SID [--id N] [--label L] [--no-session-storage]
+        const idRaw = parseFlag('--id');
+        const label = parseFlag('--label');
+        const filePath = rest[0] && !rest[0].startsWith('-') ? rest[0] : null;
+        const sid = rest.find((a, i) => (a === '--session' || a === '-s') && rest[i + 1])
+          ? rest[rest.findIndex((a, i) => (a === '--session' || a === '-s') && rest[i + 1]) + 1]
+          : null;
+
+        let vid: number;
+        if (filePath) {
+          const profile = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+          let envelope: Record<string, unknown>;
+          if (profile && typeof profile === 'object' && 'data' in profile) {
+            envelope = profile.data as Record<string, unknown>;
+          } else {
+            const { normalizeProfileForVault } = await import('./vault.js');
+            envelope = normalizeProfileForVault(profile) as unknown as Record<string, unknown>;
+          }
+          if (idRaw) {
+            await client.vault.update(Number(idRaw), envelope as never, { label: label ?? null });
+            vid = Number(idRaw);
+          } else {
+            vid = await client.vault.create(envelope as never, { label: label ?? null });
+          }
+          out({ ok: true, id: vid });
+          break;
+        }
+        if (sid) {
+          const liveClient = await ensureLiveClient();
+          const browser = await liveClient.resume(sid, { human: null });
+          try {
+            vid = await browser.vault.save({
+              label: label ?? null,
+              includeSessionStorage: !hasFlag('--no-session-storage'),
+              overwrite: !!idRaw,
+            });
+          } finally {
+            await closeClient(liveClient);
+          }
+          out({ ok: true, id: vid, session_id: sid });
+          break;
+        }
+        err('vault save needs <path> or --session <sid>', 'args');
+        process.exit(1);
+        break;
+      }
+      case 'apply': {
+        // ceki vault apply ID --session SID | --schedule N
+        const idRaw = rest[0];
+        const id = idRaw != null ? Number.parseInt(idRaw, 10) : NaN;
+        if (Number.isNaN(id)) {
+          err('vault apply needs <id>', 'args');
+          process.exit(1);
+        }
+        const sid = parseFlag('--session');
+        const schedRaw = parseFlag('--schedule');
+        if (sid) {
+          const liveClient = await ensureLiveClient();
+          const browser = await liveClient.resume(sid, { human: null });
+          await browser.vault.restore(id);
+          out({ ok: true, vault_session_id: id, session_id: sid });
+          break;
+        }
+        if (schedRaw) {
+          const liveClient = await ensureLiveClient();
+          const browser = await liveClient.rent(Number.parseInt(schedRaw, 10), { human: null, vault: id });
+          out({ ok: true, vault_session_id: id, session_id: browser.sessionId });
+          await closeClient(liveClient);
+          break;
+        }
+        err('vault apply needs --session <sid> or --schedule <n>', 'args');
+        process.exit(1);
+        break;
+      }
+      case 'delete': {
+        const idRaw = rest[0];
+        const id = idRaw != null ? Number.parseInt(idRaw, 10) : NaN;
+        if (Number.isNaN(id)) {
+          err('vault delete needs <id>', 'args');
+          process.exit(1);
+        }
+        await client.vault.delete(id);
+        out({ ok: true, deleted: id });
+        break;
+      }
+      default:
+        err(`unknown vault action: ${action}`, 'args');
+        process.exit(1);
+    }
+  } finally {
+    if (liveClient) await closeClient(liveClient);
+  }
+}
+
 // ── Daemon commands ───────────────────────────────────────────────────────
 
 async function cmdDaemon(args: string[]): Promise<void> {
@@ -1041,7 +1223,7 @@ function printHelp(): void {
 Usage: ceki <command> [options]
 
 Commands:
-  rent --schedule N [--fingerprint-from PATH]
+  rent --schedule N [--fingerprint-from PATH] [--vault ID|JSON]
   my-browsers
   search [--limit N] [--filter k=v]...
   snapshot <sid> -o PATH
@@ -1067,6 +1249,13 @@ Commands:
   daemon start           Start persistent daemon (HTTP IPC on 127.0.0.1:18777)
   daemon stop            Stop daemon gracefully
   daemon status          Check if daemon is running
+
+  vault list [--json] [--per-page N]
+  vault get ID [--json] [-o FILE]
+  vault save FILE [--id ID] [--label L]
+  vault save --session SID [--id ID] [--label L] [--no-session-storage]
+  vault apply ID --session SID | --schedule N
+  vault delete ID
 
   contract list
   contract members <cid>
@@ -1162,7 +1351,11 @@ async function main(): Promise<void> {
     return;
   }
   if (command === 'daemon') {
-    process.exitCode = await cmdDaemon(rest);
+    await cmdDaemon(rest);
+    return;
+  }
+  if (command === 'vault') {
+    await cmdVault(rest);
     return;
   }
 

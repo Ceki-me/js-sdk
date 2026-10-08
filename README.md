@@ -182,6 +182,53 @@ const saved = JSON.parse(fs.readFileSync('profile.json', 'utf-8'));
 await browser.profile.import(saved);
 ```
 
+## Browser Vault (server-stored sessions)
+
+The **vault** stores a browser snapshot (cookies + per-origin localStorage/sessionStorage + fingerprint) on the Ceki API (`/api/vault/sessions`, encrypted server-side) so you can restore it on a **different** browser later — the same session profile across machines.
+
+Two surfaces:
+
+**`client.vault`** — HTTP CRUD on vault sessions (no live browser needed):
+
+```typescript
+// List your vault sessions
+const sessions = await client.vault.list();
+for (const s of sessions) {
+  console.log(s.id, s.label, s.urls);
+}
+
+// Fetch one session with its decrypted profile envelope
+const session = await client.vault.get(8);
+const data = session.data; // {cookies, localStorage, sessionStorage, fingerprint, urls, collectedAt}
+```
+
+**`browser.vault`** — snapshot save / restore from a rented browser:
+
+```typescript
+// 1. On browser A — export the current state into a NEW vault session
+const vaultId = await browser.vault.save({ label: 'vc.ru session' });
+
+//    or overwrite the session you rented with (browser was rented with vault=8)
+const vaultId = await browser.vault.save(); // PUT onto the bound id
+
+// 2. On browser B (or the same one later) — rent WITH the vault profile
+const browserB = await client.rent(scheduleId, { vault: vaultId });
+// cookies applied immediately, localStorage/sessionStorage buffered by the
+// extension and flushed on first navigation to each origin
+await browserB.navigate('https://vc.ru');
+
+//    or restore the profile mid-session
+await browser.vault.restore(vaultId);
+```
+
+Notes:
+- Vault restore uses `session.configure(profile=...)` — the extension applies cookies first, then buffers localStorage/sessionStorage until the first navigation to each origin (Vault 3+ extension required).
+- When `vault=<id>` is passed to `rent()`, the browser is bound to that vault session: a later `browser.vault.save()` overwrites it (PUT).
+- The vault endpoints resolve the bearer token to a **user** (Sanctum); pass a user token as `apiKey` for vault operations if the agent-key path returns 401.
+- `browser.profile.export()` (local blob) and `browser.vault.save()` (server) are complementary: the first keeps the blob agent-side, the second stores it encrypted on the API.
+
+The CLI equivalent is `ceki vault list|get|save|apply|delete` (plain HTTPS, no relay session), and `ceki rent --vault <id>` restores a profile on a fresh rent.
+
 ## Human Mode
 
 Behavioral humanization is **ON by default** in both `main` and `incognito` profile modes:

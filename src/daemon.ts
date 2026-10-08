@@ -20,6 +20,7 @@ import { connect } from './client.js';
 import type { Client } from './client.js';
 import type { Browser } from './browser.js';
 import { SessionNotFound } from './errors.js';
+import type { Profile } from './types.js';
 
 const DAEMON_HOST = '127.0.0.1';
 const PID_FILE = '/tmp/ceki-daemon.pid';
@@ -213,11 +214,23 @@ export class DaemonServer {
   // ── request handling ────────────────────────────────────────────────────
 
   private async _handleRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    const url = new URL(req.url ?? '/', `http://${this.host}:${this.port}`);
+
+    // Health endpoint: GET /health returns liveness without auth.
+    if (url.pathname === '/health') {
+      if (req.method === 'GET') {
+        sendJson(res, 200, { ok: true, pid: process.pid });
+        return;
+      }
+      sendJson(res, 405, { ok: false, error: 'method not allowed' });
+      return;
+    }
+
+    // All other endpoints are POST-only.
     if (req.method !== 'POST') {
       sendJson(res, 405, { ok: false, error: 'method not allowed' });
       return;
     }
-    const url = new URL(req.url ?? '/', `http://${this.host}:${this.port}`);
     const handlerName = _ENDPOINTS[url.pathname];
     if (!handlerName) {
       sendJson(res, 404, { ok: false, error: 'not found' });
@@ -226,13 +239,24 @@ export class DaemonServer {
     let body = '';
     for await (const chunk of req) body += chunk;
     let params: Record<string, unknown> = {};
-    try { params = JSON.parse(body); } catch { /* ignore */ }
+    if (body) {
+      try {
+        params = JSON.parse(body);
+      } catch {
+        sendJson(res, 400, { ok: false, error: 'invalid JSON body' });
+        return;
+      }
+    }
     try {
-      const handler = (this as Record<string, HandlerFn>)[handlerName];
+      const handler = (this as unknown as Record<string, HandlerFn>)[handlerName];
       if (!handler) throw new Error(`handler ${handlerName} not implemented`);
-      const result = await handler(params);
+      const result = await handler.call(this, params);
       sendJson(res, 200, { ok: true, result });
     } catch (e) {
+      if (e instanceof SessionNotFound) {
+        sendJson(res, 404, { ok: false, error: (e as Error).message });
+        return;
+      }
       sendJson(res, 500, { ok: false, error: (e as Error).message });
     }
   }
@@ -244,6 +268,7 @@ export class DaemonServer {
     const schedule = params.schedule as number;
     const mode = (params.mode as 'incognito' | 'main') ?? 'incognito';
     const fingerprintFrom = params.fingerprint_from as string | undefined;
+    const vaultRaw = params.vault as string | number | undefined;
 
     const client = await connect(apiKey, connectOptions());
     let fpData: boolean | Record<string, unknown> = true;
@@ -251,12 +276,18 @@ export class DaemonServer {
       const profile = JSON.parse(fs.readFileSync(fingerprintFrom, 'utf-8'));
       fpData = profile.fingerprint || true;
     }
-    const browser = await client.rent(schedule, { human: null, fingerprint: fpData, mode });
+    let vault: number | Record<string, unknown> | undefined;
+    if (vaultRaw != null && String(vaultRaw).trim() !== '') {
+      const asNum = Number(vaultRaw);
+      vault = Number.isNaN(asNum) ? (JSON.parse(String(vaultRaw)) as Record<string, unknown>) : asNum;
+    }
+    const browser = await client.rent(schedule, { human: null, fingerprint: fpData, mode, vault });
     this._sessions.set(browser.sessionId, { client, browser });
     return {
       session_id: browser.sessionId,
       chat_topic_id: browser.chatTopicId,
       schedule_id: browser.scheduleId,
+      vault_session_id: browser._vaultSessionId,
     };
   }
 
@@ -265,7 +296,7 @@ export class DaemonServer {
     const url = params.url as string;
     const human = params.human as boolean ?? true;
     const entry = this._sessions.get(sessionId);
-    if (!entry) throw new SessionNotFound(sessionId);
+    if (!entry) throw new SessionNotFound();
     await entry.browser.navigate(url, 30000, human ? undefined : { human: false });
   }
 
@@ -275,7 +306,7 @@ export class DaemonServer {
     const y = params.y as number;
     const human = params.human as boolean ?? true;
     const entry = this._sessions.get(sessionId);
-    if (!entry) throw new SessionNotFound(sessionId);
+    if (!entry) throw new SessionNotFound();
     await entry.browser.click(x, y, human ? undefined : { human: false });
     return { pointer: [x, y] };
   }
@@ -286,7 +317,7 @@ export class DaemonServer {
     const selector = params.selector as string | undefined;
     const human = params.human as boolean ?? true;
     const entry = this._sessions.get(sessionId);
-    if (!entry) throw new SessionNotFound(sessionId);
+    if (!entry) throw new SessionNotFound();
     await entry.browser.type(text, human ? (selector ? { selector } : undefined) : { human: false });
   }
 
@@ -297,14 +328,14 @@ export class DaemonServer {
     const dy = params.dy as number;
     const human = params.human as boolean ?? true;
     const entry = this._sessions.get(sessionId);
-    if (!entry) throw new SessionNotFound(sessionId);
+    if (!entry) throw new SessionNotFound();
     await entry.browser.scroll({ x, y, deltaY: dy, human: human ? undefined : false });
   }
 
   private async _handleSwitchTab(params: Record<string, unknown>): Promise<void> {
     const sessionId = params.session_id as string;
     const entry = this._sessions.get(sessionId);
-    if (!entry) throw new SessionNotFound(sessionId);
+    if (!entry) throw new SessionNotFound();
     await entry.browser.switchTab();
   }
 
@@ -313,7 +344,7 @@ export class DaemonServer {
     const maskingMode = params.masking_mode as boolean | undefined;
     const fingerprint = params.fingerprint as boolean | undefined;
     const entry = this._sessions.get(sessionId);
-    if (!entry) throw new SessionNotFound(sessionId);
+    if (!entry) throw new SessionNotFound();
     await entry.browser.configure({ maskingMode, fingerprint });
   }
 
@@ -322,7 +353,7 @@ export class DaemonServer {
     const full = params.full as boolean ?? false;
     const format = (params.format as 'png' | 'jpeg') ?? 'png';
     const entry = this._sessions.get(sessionId);
-    if (!entry) throw new SessionNotFound(sessionId);
+    if (!entry) throw new SessionNotFound();
     let data: Buffer;
     if (format === 'jpeg') {
       const result = await entry.browser.screenshot({ format: 'base64', fullPage: full, _cdpFormat: 'jpeg' });
@@ -336,7 +367,7 @@ export class DaemonServer {
   private async _handleSnapshot(params: Record<string, unknown>): Promise<Record<string, unknown>> {
     const sessionId = params.session_id as string;
     const entry = this._sessions.get(sessionId);
-    if (!entry) throw new SessionNotFound(sessionId);
+    if (!entry) throw new SessionNotFound();
     const snap = await entry.browser.snapshot();
     const chatList = snap.chat.map((m) => ({
       from: m.sender_id,
@@ -349,7 +380,7 @@ export class DaemonServer {
   private async _handleStop(params: Record<string, unknown>): Promise<void> {
     const sessionId = params.session_id as string;
     const entry = this._sessions.get(sessionId);
-    if (!entry) throw new SessionNotFound(sessionId);
+    if (!entry) throw new SessionNotFound();
     await entry.browser.close();
     this._sessions.delete(sessionId);
   }
@@ -358,7 +389,7 @@ export class DaemonServer {
     const sessionId = params.session_id as string;
     const text = params.text as string;
     const entry = this._sessions.get(sessionId);
-    if (!entry) throw new SessionNotFound(sessionId);
+    if (!entry) throw new SessionNotFound();
     const result = await entry.browser.chat.send(text);
     return { message_id: result.messageId };
   }
@@ -368,7 +399,7 @@ export class DaemonServer {
     const timeout = params.timeout as number ?? 60;
     const since = params.since as string | undefined;
     const entry = this._sessions.get(sessionId);
-    if (!entry) throw new SessionNotFound(sessionId);
+    if (!entry) throw new SessionNotFound();
     const msgs = await entry.browser.chat.history({ since });
     if (msgs.length > 0) {
       const m = msgs[0];
@@ -382,7 +413,7 @@ export class DaemonServer {
     const limit = params.limit as number ?? 50;
     const since = params.since as string | undefined;
     const entry = this._sessions.get(sessionId);
-    if (!entry) throw new SessionNotFound(sessionId);
+    if (!entry) throw new SessionNotFound();
     const msgs = await entry.browser.chat.history({ since, limit });
     return msgs.map((m) => ({ from: m.sender_id, text: m.text, ts: m.created_at }));
   }
@@ -392,7 +423,7 @@ export class DaemonServer {
     const method = params.method as string;
     const cdpParams = params.params as Record<string, unknown> ?? {};
     const entry = this._sessions.get(sessionId);
-    if (!entry) throw new SessionNotFound(sessionId);
+    if (!entry) throw new SessionNotFound();
     return await entry.browser.send({ method, params: cdpParams });
   }
 
@@ -401,7 +432,7 @@ export class DaemonServer {
     const noSessionStorage = params.no_session_storage as boolean ?? false;
     const domains = params.domains as string | undefined;
     const entry = this._sessions.get(sessionId);
-    if (!entry) throw new SessionNotFound(sessionId);
+    if (!entry) throw new SessionNotFound();
     return await entry.browser.profile.export({
       domains: domains?.split(',').map(d => d.trim()),
       includeSessionStorage: !noSessionStorage,
@@ -410,9 +441,12 @@ export class DaemonServer {
 
   private async _handleProfileImport(params: Record<string, unknown>): Promise<void> {
     const sessionId = params.session_id as string;
-    const profile = params.profile as Record<string, unknown>;
+    const profile = params.profile as Profile;
     const entry = this._sessions.get(sessionId);
-    if (!entry) throw new SessionNotFound(sessionId);
+    if (!entry) throw new SessionNotFound();
+    // profile.ts import() validates schema_version (1|2) and throws a clear
+    // error otherwise; pass the raw record through so the browser-side
+    // validation (not a TS cast) is the source of truth.
     await entry.browser.profile.import(profile);
   }
 
@@ -423,7 +457,7 @@ export class DaemonServer {
     const filename = params.filename as string | undefined;
     const mimeType = params.mime_type as string | undefined;
     const entry = this._sessions.get(sessionId);
-    if (!entry) throw new SessionNotFound(sessionId);
+    if (!entry) throw new SessionNotFound();
     return await entry.browser.upload(selector, filePath, filename, mimeType);
   }
 
@@ -433,7 +467,7 @@ export class DaemonServer {
     const completion = params.completion as number ?? 120;
     const manual = params.manual as boolean ?? false;
     const entry = this._sessions.get(sessionId);
-    if (!entry) throw new SessionNotFound(sessionId);
+    if (!entry) throw new SessionNotFound();
     const result = await entry.browser.requestCaptcha({
       acceptanceTimeout: acceptance,
       completionTimeout: completion,

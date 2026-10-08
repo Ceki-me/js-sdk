@@ -77,6 +77,54 @@ export interface RentOptions {
   fingerprint?: boolean | Record<string, unknown>;
   mode?: 'incognito' | 'main';
   pacingProfile?: string;
+  /**
+   * Restore a vault session profile after rent: a vault session id (fetched
+   * from the API and bound to the browser so a later `browser.vault.save()`
+   * PUTs back onto it) or a raw profile envelope dict.
+   */
+  vault?: number | Record<string, unknown>;
+}
+
+/**
+ * Vault session `data` envelope — the decrypted profile payload stored on
+ * `/api/vault/sessions` (see ceki-reserch SPEC_VAULT_SESSIONS.md) and
+ * accepted by the extension's `session.configure(profile=...)`.
+ */
+export interface VaultEnvelope {
+  fingerprint?: Record<string, unknown>;
+  cookies?: SettableCookie[];
+  localStorage?: Record<string, Record<string, string>>;
+  sessionStorage?: Record<string, Record<string, string>>;
+  urls?: string[];
+  collectedAt?: string;
+}
+
+/**
+ * Cookies in CDP Network.setCookies format (Network.CookieParam), i.e. the
+ * settable subset after `sanitizeCookies` strips CDP-only diagnostic fields.
+ */
+export interface SettableCookie {
+  name: string;
+  value: string;
+  domain: string;
+  path?: string;
+  secure?: boolean;
+  httpOnly?: boolean;
+  expires?: number;
+  sameSite?: 'Strict' | 'Lax' | 'None' | undefined;
+  session?: boolean;
+}
+
+/**
+ * Profile shape accepted by `session.configure(profile=...)` (extension
+ * Vault 3+): cookies applied immediately, localStorage/sessionStorage
+ * per-origin buffered until first navigation to each origin. Fingerprint is
+ * a separate top-level configure field, NOT inside the profile.
+ */
+export interface VaultProfile {
+  cookies?: SettableCookie[];
+  localStorage?: Record<string, Record<string, string>>;
+  sessionStorage?: Record<string, Record<string, string>>;
 }
 
 export interface ScreenshotOptions {

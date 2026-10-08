@@ -5,6 +5,16 @@ export { HumanProfile } from './humanize/profile.js';
 export { BrowserChat } from './chat.js';
 export { BrowserProfile } from './profile.js';
 export {
+  ClientVault,
+  BrowserVault,
+  VaultSession,
+  VaultHttpError,
+  sanitizeCookies,
+  normalizeProfileForVault,
+  minimalVaultProfile,
+  SERIALIZABLE_COOKIE_FIELDS,
+} from './vault.js';
+export {
   CekiBrowserError,
   AuthError,
   SessionNotFound,
@@ -31,6 +41,9 @@ export type {
   ReadReceipt,
   Snapshot,
   Profile,
+  VaultEnvelope,
+  VaultProfile,
+  SettableCookie,
   RentOptions,
   ScreenshotOptions,
   ScreencastOptions,

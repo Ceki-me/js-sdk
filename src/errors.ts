@@ -13,7 +13,7 @@ export class AuthError extends CekiBrowserError {
 }
 
 export class SessionNotFound extends CekiBrowserError {
-  constructor(message = 'Session not found') {
+  constructor(message = 'session not found') {
     super(message);
     this.name = 'SessionNotFound';
   }
