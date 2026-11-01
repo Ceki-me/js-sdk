@@ -1,0 +1,671 @@
+/**
+ * WebRTC transport for P2P CDP communication.
+ *
+ * Wraps RTCPeerConnection to provide a WebRTC DataChannel-based
+ * transport for CDP commands. Used as primary transport for agent-renters,
+ * with WebSocket as fallback.
+ *
+ * Protocol (mirrors front useWebRTCP2P.js):
+ * 1. After ``match`` -> create RTCPeerConnection + DataChannel('ceki-cmd')
+ * 2. createOffer -> setLocalDescription -> extract DTLS fingerprint -> send
+ *    ``webrtc.offer {session_id, sdp, fingerprint}`` via WS signaling
+ * 3. Receive ``webrtc.answer`` -> setRemoteDescription -> ICE exchange
+ * 4. ICE candidates: local -> ``webrtc.ice_candidate`` via WS;
+ *    remote -> addIceCandidate
+ * 5. ``ceki-cmd`` DC open -> CDP JSON commands sent over DC instead of WS
+ * 6. Inbound CDP responses/events arrive on DC -> forwarded to callback
+ */
+// Browser build: use the platform-native WebRTC (available globally in all
+// modern browsers). This file is the browser twin of webrtc.ts — keep them in
+// sync on protocol changes. The implementation is selected at build time via
+// the tsup alias in tsup.config.ts (`@roamhq/wrtc` -> this module).
+//
+// NOTE: in browsers there is no `process.exit` teardown guard — the browser GC
+// handles finalization, so the shutdown-guard below is a no-op there (it
+// already guards on `typeof process !== 'undefined'`).
+//
+// The classes below come from the DOM lib types (lib.dom.d.ts) which ships
+// with the TypeScript compiler; at runtime they are the browser globals
+// RTCPeerConnection / RTCSessionDescription / RTCIceCandidate.
+
+// SDP fingerprint extraction regex (mirrors front extractFingerprint)
+const FINGERPRINT_RE = /a=fingerprint:(sha-\d+) (\S+)/i;
+
+// ── Shutdown guard (wrtc teardown race) ────────────────────────────────
+// @roamhq/wrtc (node-webrtc) keeps a native map of RefPtr<RTCDataChannel>
+// per RTCPeerConnection. A *deferred* `datachannel` dispatch (the provider's
+// ceki-capture channel) can legally re-populate that map AFTER the SDK called
+// `pc.close()` (which cleared it): the dispatch is delivered via a uv async
+// work that runs on a later event-loop turn. If the pc's JS wrapper is then
+// finalized during node's CleanupQueue (env already being torn down), the
+// native destructor calls napi_reference_unref on the dead env → SIGSEGV
+// (rc=139) on natural process exit — no signal if the deferred dispatch
+// drained before close (long settle), which is why the crash is racy.
+//
+// Fix: keep every created pc strongly referenced until process `exit`, then
+// `close()` it synchronously. `exit` fires when the loop has drained (all
+// deferred dispatches have already run) but before native env teardown, so
+// the maps are cleared under a live env and the finalizer sees empty maps.
+const _livePcs = new Set<RTCPeerConnection>();
+let _exitGuardInstalled = false;
+function trackPc(pc: RTCPeerConnection): void {
+  if (typeof process !== 'undefined') {
+    if (!_exitGuardInstalled) {
+      _exitGuardInstalled = true;
+      process.once('exit', () => {
+        // Loop has drained — no deferred wrtc dispatch can still run. Close
+        // every tracked pc so native maps are emptied under a live env.
+        for (const livePc of _livePcs) {
+          try {
+            livePc.close();
+          } catch {
+            // best-effort — process is shutting down
+          }
+        }
+        _livePcs.clear();
+      });
+    }
+  }
+  _livePcs.add(pc);
+}
+
+export interface WebRTCConfig {
+  iceServers?: RTCIceServer[];
+  iceTransportPolicy?: 'all' | 'relay';
+}
+
+export interface RTCIceServer {
+  urls: string | string[];
+  username?: string;
+  credential?: string;
+}
+
+/**
+ * Reassembles `capture-chunk` fragments back into the original capture frame.
+ * Tolerant to out-of-order arrival (the capture DC is ordered:false): chunks
+ * are buffered per frameId until all `total` chunks have arrived, then the
+ * concatenated payload is parsed and returned. Stale incomplete frames are
+ * pruned after `staleMs` so a dropped chunk cannot leak memory forever.
+ * Mirrors the browser extension's CaptureChunkReassembler (rtc-bridge.ts).
+ */
+export class CaptureChunkReassembler {
+  private frames = new Map<
+    string,
+    { chunks: string[]; received: number; total: number; receivedAt: number }
+  >();
+  private readonly staleMs = 5000;
+
+  /** Feed one parsed capture-chunk message; returns the frame object when complete, else null. */
+  handle(msg: Record<string, unknown>): Record<string, unknown> | null {
+    const frameId = msg.frameId;
+    const seq = msg.seq;
+    const total = msg.total;
+    const payload = msg.payload;
+    if (
+      typeof frameId !== 'string' ||
+      typeof seq !== 'number' ||
+      !Number.isInteger(seq) ||
+      seq < 0 ||
+      typeof total !== 'number' ||
+      !Number.isInteger(total) ||
+      total <= 0 ||
+      seq >= total ||
+      typeof payload !== 'string'
+    ) {
+      return null;
+    }
+
+    const now = Date.now();
+    for (const [id, entry] of this.frames) {
+      if (now - entry.receivedAt > this.staleMs) this.frames.delete(id);
+    }
+
+    let entry = this.frames.get(frameId);
+    if (!entry) {
+      entry = { chunks: new Array<string>(total).fill(''), received: 0, total, receivedAt: now };
+      this.frames.set(frameId, entry);
+    }
+    if (entry.chunks[seq] === '') {
+      entry.chunks[seq] = payload;
+      entry.received++;
+    }
+
+    if (entry.received === total) {
+      this.frames.delete(frameId);
+      try {
+        return JSON.parse(entry.chunks.join('')) as Record<string, unknown>;
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  }
+}
+
+/**
+ * WebRTC peer connection wrapper for P2P CDP transport.
+ *
+ * This is the js-sdk counterpart of the browser extension's
+ * ``RtcBridge`` / ``RtcPeer`` classes. It manages one
+ * ``RTCPeerConnection`` with a single ``ceki-cmd`` data channel
+ * for CDP command/response exchange.
+ *
+ * Usage::
+ *
+ *   const transport = new WebRTCTransport({ iceServers: [...] });
+ *   transport.onIceCandidate = (candidate) => wsSend(...);
+ *   transport.onCdpMessage = (msg) => handleCdp(msg);
+ *
+ *   const offer = await transport.createOffer();
+ *   const fingerprint = transport.localFingerprint;
+ *   // send webrtc.offer {session_id, sdp, fingerprint} via WS
+ *
+ *   // on webrtc.answer:
+ *   await transport.setRemoteDescription(answerSdp);
+ *
+ *   // on webrtc.ice_candidate:
+ *   await transport.addIceCandidate(candidate);
+ */
+export class WebRTCTransport {
+  private _pc: RTCPeerConnection | null = null;
+  private _cmdDc: RTCDataChannel | null = null;
+  private _captureDc: RTCDataChannel | null = null;
+  private _localFingerprint: string | null = null;
+  private _pendingRemoteCandidates: RTCIceCandidateInit[] = [];
+  private _closed = false;
+  private _iceServers: RTCIceServer[];
+  private _iceTransportPolicy: 'all' | 'relay';
+
+  // Chunk reassembly buffer for large CDP responses sent over the DC.
+  // Keyed by chunkId -> { total, payloads: Map<seq, slice>, count }.
+  // Incomplete sets stay until the session ends (bounded by session lifetime);
+  // a lost chunk surfaces as an SDK-side timeout, existing mechanism.
+  private _pendingChunks: Map<string, { total: number; payloads: Map<number, string>; count: number }> = new Map();
+
+  // Reassembles `capture-chunk` fragments on the ceki-capture DC back into
+  // full capture frames (video-frame / screenshot / video-stopped).
+  private _captureReassembler = new CaptureChunkReassembler();
+
+  // Callbacks — set by consumer (client.ts)
+  onIceCandidate: ((candidate: RTCIceCandidateInit) => void) | null = null;
+  onCdpMessage: ((msg: Record<string, unknown>) => void) | null = null;
+  onCaptureData: ((msg: Record<string, unknown>) => void) | null = null;
+  onConnectionState: ((state: string) => void) | null = null;
+  onDataChannelState: ((state: string) => void) | null = null;
+
+  // DC open promise — used by Browser.send() to wait for DC readiness
+  private _dcOpenResolve: (() => void) | null = null;
+  private _dcOpenPromise!: Promise<void>;
+
+  constructor(config?: WebRTCConfig) {
+    // ICE servers: constructor arg -> CEKI_TURN_SERVERS env -> default STUN
+    const envServersRaw = typeof process !== 'undefined' ? process.env.CEKI_TURN_SERVERS : undefined;
+    const envServers: RTCIceServer[] = [];
+    if (envServersRaw) {
+      try {
+        const parsed = JSON.parse(envServersRaw);
+        if (Array.isArray(parsed)) {
+          envServers.push(...parsed);
+        }
+      } catch {
+        // Silently ignore invalid JSON
+      }
+    }
+
+    const merged: RTCIceServer[] = config?.iceServers ? [...config.iceServers] : [];
+    const seenUrls = new Set<string>();
+    for (const srv of merged) {
+      const urls = srv.urls;
+      if (typeof urls === 'string') {
+        seenUrls.add(urls);
+      } else if (Array.isArray(urls)) {
+        urls.forEach(u => seenUrls.add(u));
+      }
+    }
+    for (const srv of envServers) {
+      const urls = srv.urls;
+      if (typeof urls === 'string') {
+        if (!seenUrls.has(urls)) {
+          merged.push(srv);
+          seenUrls.add(urls);
+        }
+      } else if (Array.isArray(urls)) {
+        const newUrls = urls.filter(u => !seenUrls.has(u));
+        if (newUrls.length > 0) {
+          merged.push({ ...srv, urls: newUrls });
+          newUrls.forEach(u => seenUrls.add(u));
+        }
+      }
+    }
+
+    this._iceServers = merged.length > 0
+      ? merged
+      : [{ urls: 'stun:stun.l.google.com:19302' }];
+
+    // ICE transport policy: constructor arg -> CEKI_ICE_TRANSPORT_POLICY env -> "all"
+    const envPolicy = typeof process !== 'undefined' ? process.env.CEKI_ICE_TRANSPORT_POLICY : undefined;
+    this._iceTransportPolicy = config?.iceTransportPolicy
+      ?? (envPolicy === 'relay' ? 'relay' as const : 'all');
+
+    this._resetDcOpen();
+  }
+
+  private _resetDcOpen(): void {
+    this._dcOpenPromise = new Promise<void>((resolve) => {
+      this._dcOpenResolve = resolve;
+    });
+  }
+
+  private async _ensurePc(): Promise<RTCPeerConnection> {
+    if (this._pc !== null) {
+      return this._pc;
+    }
+
+    const config: RTCConfiguration = {
+      iceServers: this._iceServers,
+    };
+    if (this._iceTransportPolicy === 'relay') {
+      config.iceTransportPolicy = 'relay';
+    }
+
+    this._pc = new RTCPeerConnection(config);
+    const pc = this._pc;
+    // Shutdown-guard: keep a strong ref until process exit so the native
+    // _data_channel_wrap map is cleared (pc.close()) under a live env — see
+    // trackPc above. Not removed on close(); the exit hook re-closes (idempotent)
+    // in case a deferred datachannel dispatch repopulated the map.
+    trackPc(pc);
+
+    // Wire ICE candidate callback
+    pc.addEventListener('icecandidate', (event: RTCPeerConnectionIceEvent) => {
+      const candidate = event.candidate;
+      if (!candidate) {
+        // ICE gathering complete
+        return;
+      }
+      if (this.onIceCandidate) {
+        this.onIceCandidate({
+          candidate: candidate.candidate,
+          sdpMid: candidate.sdpMid ?? null,
+          sdpMLineIndex: candidate.sdpMLineIndex,
+        });
+      }
+    });
+
+    // Wire connection state
+    pc.addEventListener('connectionstatechange', () => {
+      const state = pc?.connectionState ?? 'closed';
+      if (this.onConnectionState) {
+        this.onConnectionState(state);
+      }
+    });
+
+    // Handle incoming data channels (host-side — provider creates capture DC)
+    pc.addEventListener('datachannel', (event: RTCDataChannelEvent) => {
+      const channel = event.channel;
+      if (channel.label === 'ceki-cmd') {
+        this._cmdDc = channel;
+        this._wireCmdDc(channel);
+      } else if (channel.label === 'ceki-capture') {
+        this._captureDc = channel;
+        this._wireCaptureDc(channel);
+      }
+    });
+
+    return this._pc;
+  }
+
+  private _wireCmdDc(channel: RTCDataChannel): void {
+    channel.addEventListener('open', () => {
+      this._dcOpenResolve?.();
+      if (this.onDataChannelState) {
+        this.onDataChannelState('open');
+      }
+    });
+
+    channel.addEventListener('close', () => {
+      if (this.onDataChannelState) {
+        this.onDataChannelState('closed');
+      }
+    });
+
+    channel.addEventListener('message', (event: MessageEvent) => {
+      let data: Record<string, unknown>;
+      try {
+        data = JSON.parse(event.data as string) as Record<string, unknown>;
+      } catch {
+        return;
+      }
+      // Chunked CDP responses (large messages from the extension) are
+      // reassembled transparently here — individual chunks are never
+      // forwarded to onCdpMessage.
+      if (data.type === 'cdp-response-chunk') {
+        const restored = this._bufferChunk(data);
+        if (restored === null) {
+          return; // not complete yet (or malformed)
+        }
+        if (this.onCdpMessage) {
+          this.onCdpMessage(restored);
+        }
+        return;
+      }
+      if (this.onCdpMessage) {
+        this.onCdpMessage(data);
+      }
+    });
+  }
+
+  /**
+   * Set up message/close handlers on the ceki-capture data channel.
+   *
+   * Mirror of ``_wireCmdDc`` for the capture channel: small frames (single
+   * ``video-frame`` / screenshot messages) are forwarded to ``onCaptureData``
+   * unchanged, while ``capture-chunk`` fragments are reassembled transparently
+   * before delivery.
+   */
+  private _wireCaptureDc(channel: RTCDataChannel): void {
+    channel.addEventListener('message', (event: MessageEvent) => {
+      let data: Record<string, unknown>;
+      try {
+        data = JSON.parse(event.data as string) as Record<string, unknown>;
+      } catch {
+        return;
+      }
+      // Chunked capture frames (large messages from the extension) are
+      // reassembled transparently here — individual chunks are never
+      // forwarded to onCaptureData.
+      if (data.type === 'capture-chunk') {
+        const restored = this._captureReassembler.handle(data);
+        if (restored === null) {
+          return; // not complete yet (or malformed)
+        }
+        if (this.onCaptureData) {
+          this.onCaptureData(restored);
+        }
+        return;
+      }
+      if (this.onCaptureData) {
+        this.onCaptureData(data);
+      }
+    });
+  }
+
+  /**
+   * Buffer one CDP chunk fragment and return the reassembled message.
+   *
+   * Returns the fully restored message once all ``total`` fragments for a
+   * ``chunkId`` have arrived (in any order); returns ``null`` otherwise.
+   * Malformed fragments are dropped — a lost fragment surfaces as an
+   * SDK-side timeout (existing mechanism).
+   */
+  private _bufferChunk(chunk: Record<string, unknown>): Record<string, unknown> | null {
+    const chunkId = chunk.chunkId;
+    const seq = chunk.seq;
+    const total = chunk.total;
+    const payload = chunk.payload;
+    if (typeof chunkId !== 'string' || typeof seq !== 'number' || typeof total !== 'number' || typeof payload !== 'string') {
+      return null;
+    }
+
+    let entry = this._pendingChunks.get(chunkId);
+    if (entry === undefined) {
+      entry = { total, payloads: new Map(), count: 0 };
+      this._pendingChunks.set(chunkId, entry);
+    }
+
+    if (!entry.payloads.has(seq)) {
+      entry.payloads.set(seq, payload);
+      entry.count += 1;
+    }
+
+    if (entry.count !== entry.total) {
+      return null;
+    }
+
+    this._pendingChunks.delete(chunkId);
+    const parts: string[] = [];
+    for (let i = 0; i < entry.total; i++) {
+      const part = entry.payloads.get(i);
+      if (part === undefined) {
+        return null;
+      }
+      parts.push(part);
+    }
+    try {
+      return JSON.parse(parts.join('')) as Record<string, unknown>;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Create and set local offer, return the SDP string.
+   *
+   * Also creates the ``ceki-cmd`` data channel before generating the offer
+   * so the SDP includes it (mirrors front setupCmdChannel).
+   */
+  async createOffer(): Promise<string> {
+    const pc = await this._ensurePc();
+
+    // Reset DC-open promise for the new connection
+    this._resetDcOpen();
+
+    // Create ceki-cmd data channel (renter->host CDP commands)
+    this._cmdDc = pc.createDataChannel('ceki-cmd', { ordered: true });
+    this._wireCmdDc(this._cmdDc);
+
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    this._cacheFingerprint(pc.localDescription!.sdp);
+    return pc.localDescription!.sdp;
+  }
+
+  /**
+   * Set remote offer, create and set local answer, return answer SDP.
+   */
+  async createAnswer(remoteSdp: string): Promise<string> {
+    const pc = await this._ensurePc();
+    const remoteDesc = new RTCSessionDescription({ sdp: remoteSdp, type: 'offer' });
+    await pc.setRemoteDescription(remoteDesc);
+
+    // Flush pending ICE candidates (queued before remote was set)
+    const pending = this._pendingRemoteCandidates;
+    this._pendingRemoteCandidates = [];
+    for (const cand of pending) {
+      try {
+        await pc.addIceCandidate(new RTCIceCandidate(cand));
+      } catch {
+        // Silently skip invalid candidates
+      }
+    }
+
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+    this._cacheFingerprint(pc.localDescription!.sdp);
+    return pc.localDescription!.sdp;
+  }
+
+  /**
+   * Set remote description (answer from host).
+   */
+  async setRemoteDescription(sdp: string, type: 'offer' | 'answer' = 'answer'): Promise<void> {
+    const pc = await this._ensurePc();
+    const remoteDesc = new RTCSessionDescription({ sdp, type });
+    await pc.setRemoteDescription(remoteDesc);
+
+    // Flush pending ICE candidates
+    const pending = this._pendingRemoteCandidates;
+    this._pendingRemoteCandidates = [];
+    for (const cand of pending) {
+      try {
+        await pc.addIceCandidate(new RTCIceCandidate(cand));
+      } catch {
+        // Silently skip invalid candidates
+      }
+    }
+  }
+
+  /**
+   * Add a remote ICE candidate.
+   *
+   * Queues the candidate if remote description hasn't been set yet
+   * (mirrors front pendingCandidates pattern).
+   */
+  async addIceCandidate(candidate: RTCIceCandidateInit): Promise<void> {
+    const pc = this._pc;
+    if (pc === null || pc.remoteDescription === null) {
+      this._pendingRemoteCandidates.push(candidate);
+      return;
+    }
+
+    try {
+      await pc.addIceCandidate(new RTCIceCandidate(candidate));
+    } catch {
+      // Silently skip invalid candidates
+    }
+  }
+
+  /**
+   * Return cached DTLS fingerprint from local SDP.
+   *
+   * The fingerprint is extracted from the local SDP after
+   * ``setLocalDescription`` and cached. It is sent as part of
+   * the ``webrtc.offer`` / ``webrtc.ice_candidate`` signaling
+   * messages (mirrors front extractFingerprint).
+   */
+  get localFingerprint(): string | null {
+    return this._localFingerprint;
+  }
+
+  /**
+   * Update the ICE server list for future use.
+   *
+   * If the RTCPeerConnection has not been created yet (``_ensurePc``
+   * not called), the new servers will be used when it is first created.
+   * If the PC already exists, the servers are stored for potential
+   * future reconnection.
+   *
+   * De-duplicates by ``urls`` field against existing servers.
+   */
+  setIceServers(iceServers: RTCIceServer[]): void {
+    const seenUrls = new Set<string>();
+    for (const srv of this._iceServers) {
+      const urls = srv.urls;
+      if (typeof urls === 'string') {
+        seenUrls.add(urls);
+      } else if (Array.isArray(urls)) {
+        urls.forEach(u => seenUrls.add(u));
+      }
+    }
+    for (const srv of iceServers) {
+      const urls = srv.urls;
+      if (typeof urls === 'string') {
+        if (!seenUrls.has(urls)) {
+          this._iceServers.push(srv);
+          seenUrls.add(urls);
+        }
+      } else if (Array.isArray(urls)) {
+        const newUrls = urls.filter(u => !seenUrls.has(u));
+        if (newUrls.length > 0) {
+          this._iceServers.push({ ...srv, urls: newUrls });
+          newUrls.forEach(u => seenUrls.add(u));
+        }
+      }
+    }
+  }
+
+  /**
+   * Set ICE transport policy for future use (``"all"`` or ``"relay"``).
+   *
+   * Like ``setIceServers``, only applies to a new PC if ``_ensurePc``
+   * has not been called yet.
+   */
+  setIceTransportPolicy(policy: 'all' | 'relay'): void {
+    if (policy !== 'all' && policy !== 'relay') {
+      throw new Error(`ICE transport policy must be 'all' or 'relay', got ${policy}`);
+    }
+    this._iceTransportPolicy = policy;
+  }
+
+  /**
+   * Send a CDP message over the ceki-cmd data channel.
+   *
+   * Throws ``ConnectionLost`` if the data channel is not open.
+   */
+  async sendCdp(msg: Record<string, unknown>): Promise<void> {
+    if (this._cmdDc === null || this._cmdDc.readyState !== 'open') {
+      throw new Error('ceki-cmd DC not open');
+    }
+    this._cmdDc.send(JSON.stringify(msg));
+  }
+
+  /**
+   * Wait for the ceki-cmd data channel to open.
+   *
+   * Used by ``Browser.send()`` to prevent CDP from being sent over WS
+   * before P2P DC is ready (startup-race guard). The caller wraps this
+   * with a timeout for timeout handling.
+   */
+  async waitForDcOpen(): Promise<void> {
+    await this._dcOpenPromise;
+  }
+
+  /** Whether the P2P connection is established. */
+  get isConnected(): boolean {
+    if (this._pc === null) return false;
+    return this._pc.connectionState === 'connected';
+  }
+
+  /** Whether the ceki-cmd data channel is open. */
+  get cmdDcOpen(): boolean {
+    if (this._cmdDc === null) return false;
+    return this._cmdDc.readyState === 'open';
+  }
+
+  /** Close the peer connection and cleanup. */
+  async close(): Promise<void> {
+    this._closed = true;
+    if (this._cmdDc !== null) {
+      try {
+        this._cmdDc.close();
+      } catch {
+        // Best-effort
+      }
+      this._cmdDc = null;
+    }
+    if (this._captureDc !== null) {
+      try {
+        this._captureDc.close();
+      } catch {
+        // Best-effort
+      }
+      this._captureDc = null;
+    }
+    if (this._pc !== null) {
+      try {
+        this._pc.close();
+      } catch {
+        // Best-effort
+      }
+      // NOTE: keep the pc registered in `_livePcs` until process exit. A
+      // deferred `datachannel` dispatch (wrtc's uv-async) may re-populate the
+      // native map AFTER this first close; the exit guard re-closes it under a
+      // live env so the teardown finalizer sees empty maps. (Native Close()
+      // clears the map even on an already-closed pc — idempotent.)
+      this._pc = null;
+    }
+    this._resetDcOpen();
+    this._localFingerprint = null;
+    this._pendingRemoteCandidates = [];
+    this._pendingChunks.clear();
+  }
+
+  private _cacheFingerprint(sdp: string): void {
+    const match = FINGERPRINT_RE.exec(sdp);
+    if (match) {
+      this._localFingerprint = match[2];
+    } else {
+      this._localFingerprint = null;
+    }
+  }
+}

@@ -1,5 +1,6 @@
-import * as fs from 'node:fs';
-
+// NOTE: no top-level `node:fs` import — this module is part of the browser
+// bundle. File loading (used by CLI/Node workflows only) imports fs lazily so
+// the browser build has no node built-in dependency at module scope.
 export interface HumanProfileRaw {
   version?: number;
   name?: string;
@@ -114,6 +115,15 @@ export class HumanProfile {
   }
 
   static load(filePath: string): HumanProfile {
+    // Node-only: reads a human-profile JSON file from disk (CLI / SDK agent
+    // workflows). The browser build has no node:fs — guard with a require()
+    // existence check so the module never touches node built-ins at import
+    // time; calling load() in a browser throws a clear error instead.
+    const req = (globalThis as { require?: (id: string) => { readFileSync(p: string, e: string): string } }).require;
+    if (typeof req === 'undefined') {
+      throw new Error('HumanProfile.load() is not available in the browser (no node:fs)');
+    }
+    const fs = req('node:fs');
     const raw = fs.readFileSync(filePath, 'utf-8');
     const data = JSON.parse(raw) as Record<string, unknown>;
     return HumanProfile.fromDict(data);

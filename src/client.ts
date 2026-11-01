@@ -918,11 +918,12 @@ export class Client {
   }
 
   private _resolveHumanizer(opts?: RentOptions): Humanizer | null {
-    if (process.env.CEKI_HUMAN_DISABLE === '1') return null;
+    const hasEnv = typeof process !== 'undefined';
+    if (hasEnv && process.env.CEKI_HUMAN_DISABLE === '1') return null;
     const human = opts?.human;
     if (human === null || human === undefined) {
-      const envPreset = process.env.CEKI_HUMAN_PROFILE;
-      const envPath = process.env.CEKI_HUMAN_PROFILE_PATH;
+      const envPreset = hasEnv ? process.env.CEKI_HUMAN_PROFILE : undefined;
+      const envPath = hasEnv ? process.env.CEKI_HUMAN_PROFILE_PATH : undefined;
       if (envPath) return new Humanizer(HumanProfile.load(envPath));
       if (envPreset) return new Humanizer(HumanProfile.loadPreset(envPreset));
       return new Humanizer(HumanProfile.loadPreset('natural'));

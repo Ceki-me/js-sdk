@@ -1,4 +1,5 @@
-import mime from 'mime-types';
+// NOTE: `mime-types` (node:path dep) replaced by inline _detectMime table so
+// this module stays browser-bundle-safe.
 import { TimeoutError, SessionEnded, CaptchaError, CaptchaTimeoutError } from './errors.js';
 import { BrowserChat } from './chat.js';
 import { BrowserProfile } from './profile.js';
@@ -425,7 +426,21 @@ export class Browser {
   }
 
   private static _detectMime(filename: string): string {
-    return mime.lookup(filename) || 'application/octet-stream';
+    // Lightweight extension→MIME table (browser-safe substitute for
+    // `mime-types`, which imports node:path). Covers the file kinds the
+    // upload path realistically sees; fallback is the generic binary type.
+    const ext = (filename.split('.').pop() || '').toLowerCase();
+    const table: Record<string, string> = {
+      png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif',
+      webp: 'image/webp', svg: 'image/svg+xml', bmp: 'image/bmp',
+      pdf: 'application/pdf', txt: 'text/plain', csv: 'text/csv',
+      json: 'application/json', xml: 'text/xml', html: 'text/html', htm: 'text/html',
+      zip: 'application/zip', gz: 'application/gzip', tar: 'application/x-tar',
+      doc: 'application/msword', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      xls: 'application/vnd.ms-excel', xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      mp3: 'audio/mpeg', wav: 'audio/wav', mp4: 'video/mp4', webm: 'video/webm',
+    };
+    return table[ext] || 'application/octet-stream';
   }
 
   async upload(
@@ -627,6 +642,30 @@ export class Browser {
 
   async switchTab(): Promise<void> {
     this._sendRaw({ type: 'switch_tab', session_id: this.sessionId });
+  }
+
+  /**
+   * Send a raw native-input event to the rented browser (mirrors the front's
+   * `sendInput` on the ceki-cmd DC).
+   *
+   * Payload shape (same as the extension's InputHandler):
+   *   { type: 'mouse'|'keyboard'|'touch', action: 'move'|'down'|'up'|'click'|'wheel'|'keydown'|'keyup'|'keypress', x?, y?, button?, key?, keyCode?, deltaX?, deltaY?, modifiers?, timestamp? }
+   *
+   * Fire-and-forget: no CDP response is awaited. Prefers the P2P data channel
+   * (no session_id — the extension scopes the DC to its session); falls back to
+   * the signaling WS with an explicit session_id for relay routing.
+   */
+  async sendInput(payload: Record<string, unknown>): Promise<void> {
+    const p2p = this._client._p2p;
+    if (p2p && p2p.cmdDcOpen && !this._p2pFallback) {
+      try {
+        await p2p.sendCdp({ ...payload });
+        return;
+      } catch {
+        // fall through to WS
+      }
+    }
+    this._client._wsSend({ ...payload, session_id: this.sessionId });
   }
 
   async configure(opts: {

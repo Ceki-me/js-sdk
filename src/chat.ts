@@ -1,6 +1,6 @@
-import * as crypto from 'node:crypto';
-import * as fs from 'node:fs';
-import * as path from 'node:path';
+// Node imports kept lazy so this module does not break the browser bundle.
+// Every use below guards on node availability; in the browser the fs/path/crypto
+// paths are replaced by browser equivalents or a clear error.
 import { TimeoutError, ChatSendFailed } from './errors.js';
 import type { ChatMessage, ReadReceipt, ChatHistoryOptions } from './types.js';
 import type { Browser } from './browser.js';
@@ -31,7 +31,15 @@ function detectMime(buf: Buffer): { mime: string; ext: string } {
 }
 
 function randomHex(len: number): string {
-  return crypto.randomBytes(len / 2).toString('hex');
+  // Browser-safe: node:crypto.randomBytes in Node, crypto.getRandomValues in
+  // the browser (both fill a Uint8Array with the same entropy guarantee).
+  const bytes = new Uint8Array(Math.ceil(len / 2));
+  if (typeof globalThis !== 'undefined' && 'crypto' in globalThis) {
+    globalThis.crypto.getRandomValues(bytes);
+  } else {
+    for (let i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256);
+  }
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('').slice(0, len);
 }
 
 export class BrowserChat {
@@ -75,6 +83,12 @@ export class BrowserChat {
     let filename: string;
 
     if (typeof source === 'string') {
+      const req = (globalThis as { require?: (id: string) => unknown }).require;
+      if (typeof req === 'undefined') {
+        throw new Error('sendImage(path) is not available in the browser — pass a Buffer/File instead');
+      }
+      const fs = req('node:fs') as { readFileSync(p: string): Buffer };
+      const path = req('node:path') as { basename(p: string): string };
       buf = fs.readFileSync(source);
       filename = path.basename(source);
     } else {
