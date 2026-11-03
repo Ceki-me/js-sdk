@@ -49,7 +49,7 @@ const FINGERPRINT_RE = /a=fingerprint:(sha-\d+) (\S+)/i;
 const _livePcs = new Set<RTCPeerConnection>();
 let _exitGuardInstalled = false;
 function trackPc(pc: RTCPeerConnection): void {
-  if (typeof process !== 'undefined') {
+  if (typeof process !== 'undefined' && typeof process.once === 'function') {
     if (!_exitGuardInstalled) {
       _exitGuardInstalled = true;
       process.once('exit', () => {
@@ -268,7 +268,9 @@ export class WebRTCTransport {
       config.iceTransportPolicy = 'relay';
     }
 
+    console.warn('[p2p-diag] _ensurePc(browser): creating RTCPeerConnection');
     this._pc = new RTCPeerConnection(config);
+    console.warn('[p2p-diag] _ensurePc(browser): created, state=' + String(this._pc?.connectionState));
     const pc = this._pc;
     // Shutdown-guard: keep a strong ref until process exit so the native
     // _data_channel_wrap map is cleared (pc.close()) under a live env — see
@@ -445,19 +447,96 @@ export class WebRTCTransport {
    * so the SDP includes it (mirrors front setupCmdChannel).
    */
   async createOffer(): Promise<string> {
-    const pc = await this._ensurePc();
+    // Create the peer connection INLINE (mirrors the legacy front's
+    // createAndSendOffer: `pc.value = new RTCPeerConnection(...)` then
+    // createOffer directly). The `_ensurePc()` wrapper was stalling here in
+    // the canvas/WS-handler context — the `await` after the PC is created
+    // never resumed, so the offer never went out and the cmd DC never opened
+    // (input dead). Inline creation avoids that entirely.
+    // Create the peer connection exactly like the legacy front's
+    // createAndSendOffer: `new RTCPeerConnection` inline, listeners attached
+    // directly, then createDataChannel + createOffer. No `_ensurePc` wrapper,
+    // no helper calls between creation and the data channel — in the
+    // canvas/WS-handler context those intermediate steps could stall and the
+    // offer never went out.
+    const config: RTCConfiguration = { iceServers: this._iceServers };
+    if (this._iceTransportPolicy === 'relay') config.iceTransportPolicy = 'relay';
+    console.log('[p2p-diag] createOffer: config=' + JSON.stringify(config?.iceServers?.slice(0,1)));
+    const pc = new RTCPeerConnection(config);
+    console.log('[p2p-diag] createOffer: pc made state=' + String(pc?.connectionState));
+    this._pc = pc;
+    trackPc(pc);
 
-    // Reset DC-open promise for the new connection
+    // ICE candidate → relay signaling
+    pc.addEventListener('icecandidate', (event: RTCPeerConnectionIceEvent) => {
+      const candidate = event.candidate;
+      if (!candidate) return;
+      if (this.onIceCandidate) {
+        this.onIceCandidate({
+          candidate: candidate.candidate,
+          sdpMid: candidate.sdpMid ?? null,
+          sdpMLineIndex: candidate.sdpMLineIndex,
+        });
+      }
+    });
+    // connection state
+    pc.addEventListener('connectionstatechange', () => {
+      const state = pc?.connectionState ?? 'closed';
+      if (this.onConnectionState) this.onConnectionState(state);
+    });
+    // incoming data channels (host side: provider creates capture DC)
+    pc.addEventListener('datachannel', (event: RTCDataChannelEvent) => {
+      const channel = event.channel;
+      if (channel.label === 'ceki-cmd') {
+        this._cmdDc = channel;
+        this._wireCmdDc(channel);
+      } else if (channel.label === 'ceki-capture') {
+        this._captureDc = channel;
+        this._wireCaptureDc(channel);
+      }
+    });
+
     this._resetDcOpen();
 
     // Create ceki-cmd data channel (renter->host CDP commands)
+    console.log('[p2p-diag] createOffer: step4-createDataChannel');
     this._cmdDc = pc.createDataChannel('ceki-cmd', { ordered: true });
     this._wireCmdDc(this._cmdDc);
 
+    console.log('[p2p-diag] createOffer: step5-pc.createOffer');
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
     this._cacheFingerprint(pc.localDescription!.sdp);
     return pc.localDescription!.sdp;
+  }
+
+  /** Wire ICE/connection/datachannel listeners onto a fresh peer connection. */
+  private _wirePcListeners(pc: RTCPeerConnection): void {
+    pc.addEventListener('icecandidate', (event: RTCPeerConnectionIceEvent) => {
+      const candidate = event.candidate;
+      if (!candidate) return;
+      if (this.onIceCandidate) {
+        this.onIceCandidate({
+          candidate: candidate.candidate,
+          sdpMid: candidate.sdpMid ?? null,
+          sdpMLineIndex: candidate.sdpMLineIndex,
+        });
+      }
+    });
+    pc.addEventListener('connectionstatechange', () => {
+      const state = pc?.connectionState ?? 'closed';
+      if (this.onConnectionState) this.onConnectionState(state);
+    });
+    pc.addEventListener('datachannel', (event: RTCDataChannelEvent) => {
+      const channel = event.channel;
+      if (channel.label === 'ceki-cmd') {
+        this._cmdDc = channel;
+        this._wireCmdDc(channel);
+      } else if (channel.label === 'ceki-capture') {
+        this._captureDc = channel;
+        this._wireCaptureDc(channel);
+      }
+    });
   }
 
   /**

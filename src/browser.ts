@@ -657,12 +657,18 @@ export class Browser {
    */
   async sendInput(payload: Record<string, unknown>): Promise<void> {
     const p2p = this._client._p2p;
-    if (p2p && p2p.cmdDcOpen && !this._p2pFallback) {
+    // Input events MUST go over the ceki-cmd DataChannel — the extension only
+    // handles mouse/keyboard/touch on the P2P DC, not over the signaling WS.
+    // Do NOT gate on `_p2pFallback`: that flag is set once when the FIRST CDP
+    // round-trip raced the DC handshake and stays true forever, so a session
+    // that later got its DC open would silently send input over WS → clicks /
+    // scrolls never reach the page even though video (capture DC) works.
+    if (p2p && p2p.cmdDcOpen) {
       try {
         await p2p.sendCdp({ ...payload });
         return;
       } catch {
-        // fall through to WS
+        // fall through to WS (last resort)
       }
     }
     this._client._wsSend({ ...payload, session_id: this.sessionId });
