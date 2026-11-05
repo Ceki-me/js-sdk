@@ -1,4 +1,5 @@
-import mime from 'mime-types';
+// NOTE: `mime-types` (node:path dep) replaced by inline _detectMime table so
+// this module stays browser-bundle-safe.
 import { TimeoutError, SessionEnded, CaptchaError, CaptchaTimeoutError } from './errors.js';
 import { BrowserChat } from './chat.js';
 import { BrowserProfile } from './profile.js';
@@ -425,7 +426,21 @@ export class Browser {
   }
 
   private static _detectMime(filename: string): string {
-    return mime.lookup(filename) || 'application/octet-stream';
+    // Lightweight extension→MIME table (browser-safe substitute for
+    // `mime-types`, which imports node:path). Covers the file kinds the
+    // upload path realistically sees; fallback is the generic binary type.
+    const ext = (filename.split('.').pop() || '').toLowerCase();
+    const table: Record<string, string> = {
+      png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif',
+      webp: 'image/webp', svg: 'image/svg+xml', bmp: 'image/bmp',
+      pdf: 'application/pdf', txt: 'text/plain', csv: 'text/csv',
+      json: 'application/json', xml: 'text/xml', html: 'text/html', htm: 'text/html',
+      zip: 'application/zip', gz: 'application/gzip', tar: 'application/x-tar',
+      doc: 'application/msword', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      xls: 'application/vnd.ms-excel', xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      mp3: 'audio/mpeg', wav: 'audio/wav', mp4: 'video/mp4', webm: 'video/webm',
+    };
+    return table[ext] || 'application/octet-stream';
   }
 
   async upload(
@@ -627,6 +642,26 @@ export class Browser {
 
   async switchTab(): Promise<void> {
     this._sendRaw({ type: 'switch_tab', session_id: this.sessionId });
+  }
+
+  /**
+   * Send a raw native-input event to the rented browser.
+   *
+   * The payload uses the canvas's canonical shape:
+   *   { type: 'mouse'|'keyboard'|'touch', action: 'move'|'down'|'up'|'click'|'wheel'|'keydown'|'keyup'|'keypress', x?, y?, button?, key?, keyCode?, deltaX?, deltaY?, modifiers?, timestamp? }
+   *
+   * We convert it into CDP `Input.dispatchMouseEvent` / `Input.dispatchKeyEvent`
+   * commands and send them through `send()` — the single transport-agnostic
+   * path (P2P ceki-cmd DC when the session chose P2P, signaling WS otherwise).
+   * The extension accepts CDP input on BOTH transports, so a custom
+   * `{type:'mouse'}` DC-only wire format is not needed anymore.
+   */
+  async sendInput(payload: Record<string, unknown>): Promise<void> {
+    for (const cdp of toCdpInputCommands(payload)) {
+      // Fire-and-forget: input must not stall on a CDP response round-trip.
+      // send() routes through the session's chosen transport (_p2pFallback).
+      await this.send({ method: cdp.method, params: cdp.params }).catch(() => {});
+    }
   }
 
   async configure(opts: {
@@ -1094,4 +1129,152 @@ export class Browser {
   private _cleanup(): void {
     this._client._activeBrowsers.delete(this.sessionId);
   }
+}
+
+// ── Canvas input → CDP converter ────────────────────────────────────────
+// The canvas sends native input in a compact wire shape (same as the old
+// extension InputHandler). Convert it to CDP Input.dispatch* commands and
+// ship them through send() so input works on ANY transport (P2P DC or WS).
+// Mirrors src/offscreen/input-handler.ts in the extension 1:1.
+
+interface CdpInputCommand { method: string; params?: Record<string, unknown> }
+
+function isPrintableChar(key: string): boolean {
+  if (key.length !== 1) return false;
+  const c = key.charCodeAt(0);
+  return (c >= 0x20 && c <= 0x7e) || c >= 0xa0;
+}
+
+function buildModifiers(modifiers?: unknown): number {
+  if (!modifiers) return 0;
+  if (typeof modifiers === 'number') return modifiers as number;
+  const m = modifiers as Record<string, boolean>;
+  let result = 0;
+  if (m.ctrl) result |= 1; // 1 = Ctrl
+  if (m.alt) result |= 2;  // 2 = Alt
+  if (m.shift) result |= 4; // 4 = Shift
+  if (m.meta) result |= 8; // 8 = Meta
+  return result;
+}
+
+function mapMouseButton(button: number): 'left' | 'middle' | 'right' | 'back' | 'forward' {
+  switch (button) {
+    case 0: return 'left';
+    case 1: return 'middle';
+    case 2: return 'right';
+    case 3: return 'back';
+    case 4: return 'forward';
+    default: return 'left';
+  }
+}
+
+const KEY_MAP: Record<string, string> = {
+  Enter: 'Enter', Tab: 'Tab', Backspace: 'Backspace', Delete: 'Delete',
+  Escape: 'Escape', ArrowUp: 'ArrowUp', ArrowDown: 'ArrowDown',
+  ArrowLeft: 'ArrowLeft', ArrowRight: 'ArrowRight',
+  F1: 'F1', F2: 'F2', F3: 'F3', F4: 'F4', F5: 'F5', F6: 'F6',
+  F7: 'F7', F8: 'F8', F9: 'F9', F10: 'F10', F11: 'F11', F12: 'F12',
+};
+
+const KEYCODE_MAP: Record<number, string> = {
+  13: 'Enter', 9: 'Tab', 8: 'Backspace', 46: 'Delete', 27: 'Escape',
+  38: 'ArrowUp', 40: 'ArrowDown', 37: 'ArrowLeft', 39: 'ArrowRight',
+  112: 'F1', 113: 'F2', 114: 'F3', 115: 'F4', 116: 'F5', 117: 'F6',
+  118: 'F7', 119: 'F8', 120: 'F9', 121: 'F10', 122: 'F11', 123: 'F12',
+};
+
+function mapKeyCode(keyCode: number): string {
+  return KEYCODE_MAP[keyCode] || `Key${String.fromCharCode(keyCode)}`;
+}
+
+export function toCdpInputCommands(payload: Record<string, unknown>): CdpInputCommand[] {
+  const type = String(payload.type ?? '');
+  const action = String(payload.action ?? '');
+  const x = Number(payload.x ?? 0);
+  const y = Number(payload.y ?? 0);
+  const button = Number(payload.button ?? 0);
+  const clickCount = Number(payload.clickCount ?? 1);
+  const modifiers = buildModifiers(payload.modifiers);
+  const out: CdpInputCommand[] = [];
+
+  const mouseCmd = (t: string, extra: Record<string, unknown> = {}): CdpInputCommand => ({
+    method: 'Input.dispatchMouseEvent',
+    params: { type: t, x, y, modifiers, ...extra },
+  });
+
+  const keyCmd = (t: string, extra: Record<string, unknown> = {}): CdpInputCommand => {
+    const key = String(payload.key ?? '');
+    const keyCode = Number(payload.keyCode ?? 0);
+    const isAccelerator = (modifiers & 6) !== 0; // 2=Ctrl, 4=Meta
+    const params: Record<string, unknown> = {
+      type: t,
+      key: KEY_MAP[key] || key,
+      code: mapKeyCode(keyCode),
+      windowsVirtualKeyCode: keyCode,
+      modifiers,
+      ...extra,
+    };
+    if (t === 'keyDown' && isPrintableChar(key) && !isAccelerator) {
+      params.text = key;
+      params.unmodifiedText = key;
+    }
+    return { method: 'Input.dispatchKeyEvent', params };
+  };
+
+  switch (type) {
+    case 'mouse':
+    case 'touch': {
+      switch (action) {
+        case 'move':
+          out.push(mouseCmd('mouseMoved', { button: 'left' }));
+          break;
+        case 'down':
+          out.push(mouseCmd('mousePressed', { button: mapMouseButton(button), clickCount }));
+          break;
+        case 'up':
+          out.push(mouseCmd('mouseReleased', { button: mapMouseButton(button), clickCount }));
+          break;
+        case 'click':
+          out.push(
+            mouseCmd('mousePressed', { button: mapMouseButton(button), clickCount }),
+            mouseCmd('mouseReleased', { button: mapMouseButton(button), clickCount }),
+          );
+          break;
+        case 'wheel':
+          out.push(mouseCmd('mouseWheel', {
+            deltaX: Number(payload.deltaX ?? 0),
+            deltaY: Number(payload.deltaY ?? 0),
+            deltaZ: Number(payload.deltaZ ?? 0),
+          }));
+          break;
+      }
+      break;
+    }
+    case 'keyboard': {
+      switch (action) {
+        case 'keydown': {
+          const key = String(payload.key ?? '');
+          const keyCode = Number(payload.keyCode ?? 0);
+          const isAccelerator = (modifiers & 6) !== 0;
+          out.push(keyCmd(isAccelerator ? 'rawKeyDown' : 'keyDown'));
+          break;
+        }
+        case 'keyup':
+          out.push(keyCmd('keyUp'));
+          break;
+        case 'keypress': {
+          const key = String(payload.key ?? '');
+          const keyCode = Number(payload.keyCode ?? 0);
+          const isAccelerator = (modifiers & 6) !== 0;
+          out.push(
+            keyCmd(isAccelerator ? 'rawKeyDown' : 'keyDown'),
+            keyCmd('keyUp'),
+          );
+          break;
+        }
+      }
+      break;
+    }
+  }
+  return out;
 }

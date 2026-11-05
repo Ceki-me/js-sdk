@@ -1,16 +1,45 @@
-import * as fs from 'node:fs';
-import * as path from 'node:path';
-import * as os from 'node:os';
+// Session state persistence — Node-only (writes .ceki/sessions JSON files).
+// In the browser bundle the node imports below are never loaded at module
+// scope; every function that touches disk is a no-op there, so the rest of
+// the SDK (rent / CDP / P2P) works unchanged in the browser.
 
-const STATE_DIR = path.join(os.homedir(), '.ceki', 'sessions');
+type NodeFs = {
+  readFileSync(p: string, e: string): string;
+  mkdirSync(p: string, o: { recursive: boolean }): void;
+  writeFileSync(p: string, c: string, e: string): void;
+  unlinkSync(p: string): void;
+};
+type NodePath = { join(...parts: string[]): string };
+type NodeOs = { homedir(): string };
 
-function statePath(sid: string): string {
-  return path.join(STATE_DIR, `${sid}.json`);
+function nodeRequire(): { fs: NodeFs; path: NodePath; os: NodeOs } {
+  const req = (globalThis as { require?: (id: string) => unknown }).require;
+  if (typeof req === 'undefined') throw new Error('node:fs unavailable');
+  return {
+    fs: req('node:fs') as NodeFs,
+    path: req('node:path') as NodePath,
+    os: req('node:os') as NodeOs,
+  };
+}
+
+function isNode(): boolean {
+  return typeof (globalThis as { require?: unknown }).require === 'function';
+}
+
+function statePath(node: { fs: NodeFs; path: NodePath; os: NodeOs }, sid: string): string {
+  return node.path.join(node.os.homedir(), '.ceki', 'sessions', `${sid}.json`);
+}
+
+function mkStateDir(node: { fs: NodeFs; path: NodePath; os: NodeOs }): void {
+  const dir = node.path.join(node.os.homedir(), '.ceki', 'sessions');
+  node.fs.mkdirSync(dir, { recursive: true });
 }
 
 export function loadSession(sid: string): Record<string, unknown> | null {
+  if (!isNode()) return null;
   try {
-    const raw = fs.readFileSync(statePath(sid), 'utf-8');
+    const node = nodeRequire();
+    const raw = node.fs.readFileSync(statePath(node, sid), 'utf-8');
     return JSON.parse(raw) as Record<string, unknown>;
   } catch {
     return null;
@@ -18,14 +47,22 @@ export function loadSession(sid: string): Record<string, unknown> | null {
 }
 
 export function saveSession(sid: string, data: Record<string, unknown>): void {
-  fs.mkdirSync(STATE_DIR, { recursive: true });
-  const payload = { ...data, updated_at: new Date().toISOString() };
-  fs.writeFileSync(statePath(sid), JSON.stringify(payload, null, 2), 'utf-8');
+  if (!isNode()) return;
+  try {
+    const node = nodeRequire();
+    mkStateDir(node);
+    const payload = { ...data, updated_at: new Date().toISOString() };
+    node.fs.writeFileSync(statePath(node, sid), JSON.stringify(payload, null, 2), 'utf-8');
+  } catch {
+    // Non-fatal — persistence is best-effort (browser no-op).
+  }
 }
 
 export function deleteSession(sid: string): void {
+  if (!isNode()) return;
   try {
-    fs.unlinkSync(statePath(sid));
+    const node = nodeRequire();
+    node.fs.unlinkSync(statePath(node, sid));
   } catch (err: unknown) {
     if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
   }

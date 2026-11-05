@@ -222,7 +222,13 @@ export class Client {
       });
     });
 
-    // 2. Wait for P2P transport to initialize (up to 15s)
+    // 2. Init P2P from top-level (NOT the WS handler — see _onMatch note),
+    //    then wait for the transport (up to 15s).
+    if (this._p2pEnabled && match?.session_id && !this._p2pReady) {
+      this._initP2P(String(match.session_id)).catch((err) => {
+        console.warn('p2p: init failed after match:', err);
+      });
+    }
     if (this._p2pEnabled && !this._p2pReady) {
       try {
         await Promise.race([
@@ -725,13 +731,11 @@ export class Client {
         browser_info: (msg.browser_info as Record<string, unknown>) ?? {},
       };
 
-      // Initiate P2P WebRTC BEFORE resolving match — rent() awaits _p2pReadyPromise
-      if (this._p2pEnabled && sessionId) {
-        this._initP2P(sessionId).catch((err) => {
-          console.warn('p2p: init failed after match:', err);
-        });
-      }
-
+      // NOTE: P2P init is NOT started here. _initP2P creates the RTCPeerConnection
+      // and the offer; doing that inside the WS onmessage handler stalls the
+      // createOffer promise in the browser (canvas context) and the offer never
+      // goes out → no cmd DC → input dead. rent() (top-level) calls _initP2P
+      // right after match instead, mirroring the legacy front.
       pending.resolve(match);
     }
   }
@@ -918,11 +922,12 @@ export class Client {
   }
 
   private _resolveHumanizer(opts?: RentOptions): Humanizer | null {
-    if (process.env.CEKI_HUMAN_DISABLE === '1') return null;
+    const hasEnv = typeof process !== 'undefined';
+    if (hasEnv && process.env.CEKI_HUMAN_DISABLE === '1') return null;
     const human = opts?.human;
     if (human === null || human === undefined) {
-      const envPreset = process.env.CEKI_HUMAN_PROFILE;
-      const envPath = process.env.CEKI_HUMAN_PROFILE_PATH;
+      const envPreset = hasEnv ? process.env.CEKI_HUMAN_PROFILE : undefined;
+      const envPath = hasEnv ? process.env.CEKI_HUMAN_PROFILE_PATH : undefined;
       if (envPath) return new Humanizer(HumanProfile.load(envPath));
       if (envPreset) return new Humanizer(HumanProfile.loadPreset(envPreset));
       return new Humanizer(HumanProfile.loadPreset('natural'));
@@ -957,18 +962,99 @@ export class Client {
    *
    * Mirrors the front flow in ``useWebRTCP2P.js createAndSendOffer``.
    */
+  /**
+   * Fetch TURN/STUN servers from the backend `GET /api/ice-servers` (same
+   * endpoint the legacy front useWebRTCP2P.getIceServers() calls). P2P through
+   * NAT needs the TURN server — STUN-only candidates get filtered by the
+   * extension (private-IP) and ICE never completes. Without this the renter
+   * (who initiates the offer) has no TURN and P2P silently falls back to WS.
+   */
+  private async _fetchIceServers(): Promise<RTCIceServer[] | null> {
+    try {
+      const url = `${this._apiUrl}/api/ice-servers`;
+      const headers: Record<string, string> = {
+        'Authorization': `Bearer ${this._apiKey}`,
+      };
+      if (this._basicAuth) {
+        const enc = typeof Buffer !== 'undefined'
+          ? Buffer.from(`${this._basicAuth[0]}:${this._basicAuth[1]}`).toString('base64')
+          : btoa(`${this._basicAuth[0]}:${this._basicAuth[1]}`);
+        headers['X-Basic-Auth'] = `Basic ${enc}`;
+      }
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 3000);
+      let resp: Response;
+      try {
+        resp = await fetch(url, { headers, signal: ctrl.signal });
+      } finally {
+        clearTimeout(t);
+      }
+      if (!resp.ok) return null;
+      const data = await resp.json() as { iceServers?: RTCIceServer[] };
+      return Array.isArray(data.iceServers) && data.iceServers.length > 0 ? data.iceServers : null;
+    } catch (e) {
+      console.warn('p2p: failed to fetch ice-servers:', (e as Error)?.message || e);
+      return null;
+    }
+  }
+
+  /**
+   * Set TURN/STUN servers before a rent so the P2P offer is created with the
+   * right ICE config. Mirrors the legacy front: it fetches GET /api/ice-servers
+   * BEFORE creating the RTCPeerConnection. Calling this up front (e.g. right
+   * after connectAsUserSession, before rent) removes the blocking fetch from
+   * _initP2P so the webrtc.offer always goes out immediately and reliably.
+   */
+  setIceServers(servers: RTCIceServer[]): void {
+    if (Array.isArray(servers) && servers.length > 0) this._p2pIceServers = servers;
+  }
+
   private async _initP2P(sessionId: string): Promise<void> {
-    if (this._p2pInitializing) return;
+    // If a previous _initP2P hung (e.g. createOffer never resolved after a
+    // raced rent) _p2pInitializing stays true forever and every later match
+    // silently returns here → no webrtc.offer ever goes out → no cmd DC →
+    // input dead. Reset the stuck flag so a NEW rent can re-init P2P.
+    if (this._p2pInitializing) {
+      const stuck = this._p2p === null;
+      if (!stuck) return; // a live transport already exists — don't touch it
+      console.log('[p2p-diag] _initP2P: previous init hung, resetting flag');
+      this._p2pInitializing = false;
+    }
     this._p2pInitializing = true;
 
     try {
-      if (this._p2p !== null) return; // already initialized
+      // If a stale transport exists from a previous rent that never got its
+      // cmd DC open, reuse it would stall createOffer on a dead pc. Tear it
+      // down and build a fresh one so the offer always goes out.
+      if (this._p2p !== null) {
+        if (this._p2p.cmdDcOpen || this._p2p.isConnected) {
+          return; // genuinely live — keep it
+        }
+        console.log('[p2p-diag] _initP2P: stale transport, rebuilding');
+        await this._p2p.close().catch(() => {});
+        this._p2p = null;
+      }
 
-      // Merge discovered ICE servers with constructor defaults/environment
+      // Merge discovered ICE servers with constructor defaults/environment.
+      // TURN servers must be known BEFORE the offer is created (the legacy
+      // front fetches GET /api/ice-servers before new RTCPeerConnection).
+      // _p2pIceServers is populated by setIceServers() (adapter prefetches it
+      // before rent) or from relay ice_servers. NO blocking fetch here — the
+      // webrtc.offer must go out immediately, else the P2P handshake stalls.
       const iceServers: RTCIceServer[] = this._p2pIceServers ?? [
         { urls: 'stun:stun.l.google.com:19302' },
       ];
 
+      // Yield to the microtask queue BEFORE constructing the RTCPeerConnection.
+      // The legacy front does `await getIceServers()` right before
+      // `new RTCPeerConnection` — that async fetch hands control back to the
+      // event loop, so the PC is created in a clean task context. Without this
+      // yield, when _initP2P runs synchronously out of the WS onmessage handler
+      // (canvas flow), `createOffer()` stalls and the offer never goes out →
+      // no cmd DC → input dead.
+      await Promise.resolve();
+
+      console.log('[p2p-diag] _initP2P: creating transport with iceServers=' + (iceServers?.length ?? 0));
       const transport = new WebRTCTransport({
         iceServers,
         iceTransportPolicy: (typeof process !== 'undefined'
@@ -1031,9 +1117,12 @@ export class Client {
 
       this._p2p = transport;
 
+      console.log('[p2p-diag] _initP2P: before createOffer');
       const offerSdp = await transport.createOffer();
+      console.log('[p2p-diag] _initP2P: after createOffer, sdpLen=' + String(offerSdp?.length ?? 0));
       const fingerprint = transport.localFingerprint ?? '';
 
+      console.log('[p2p-diag] _initP2P: sending webrtc.offer, sdpLen=' + String(offerSdp?.length ?? 0));
       await this._wsSend({
         type: 'webrtc.offer',
         session_id: sessionId,

@@ -28,6 +28,44 @@ const {
 // SDP fingerprint extraction regex (mirrors front extractFingerprint)
 const FINGERPRINT_RE = /a=fingerprint:(sha-\d+) (\S+)/i;
 
+// ── Shutdown guard (wrtc teardown race) ────────────────────────────────
+// @roamhq/wrtc (node-webrtc) keeps a native map of RefPtr<RTCDataChannel>
+// per RTCPeerConnection. A *deferred* `datachannel` dispatch (the provider's
+// ceki-capture channel) can legally re-populate that map AFTER the SDK called
+// `pc.close()` (which cleared it): the dispatch is delivered via a uv async
+// work that runs on a later event-loop turn. If the pc's JS wrapper is then
+// finalized during node's CleanupQueue (env already being torn down), the
+// native destructor calls napi_reference_unref on the dead env → SIGSEGV
+// (rc=139) on natural process exit — no signal if the deferred dispatch
+// drained before close (long settle), which is why the crash is racy.
+//
+// Fix: keep every created pc strongly referenced until process `exit`, then
+// `close()` it synchronously. `exit` fires when the loop has drained (all
+// deferred dispatches have already run) but before native env teardown, so
+// the maps are cleared under a live env and the finalizer sees empty maps.
+const _livePcs = new Set<RTCPeerConnection>();
+let _exitGuardInstalled = false;
+function trackPc(pc: RTCPeerConnection): void {
+  if (typeof process !== 'undefined' && typeof process.once === 'function') {
+    if (!_exitGuardInstalled) {
+      _exitGuardInstalled = true;
+      process.once('exit', () => {
+        // Loop has drained — no deferred wrtc dispatch can still run. Close
+        // every tracked pc so native maps are emptied under a live env.
+        for (const livePc of _livePcs) {
+          try {
+            livePc.close();
+          } catch {
+            // best-effort — process is shutting down
+          }
+        }
+        _livePcs.clear();
+      });
+    }
+  }
+  _livePcs.add(pc);
+}
+
 export interface WebRTCConfig {
   iceServers?: RTCIceServer[];
   iceTransportPolicy?: 'all' | 'relay';
@@ -228,6 +266,11 @@ export class WebRTCTransport {
     }
 
     this._pc = new RTCPeerConnection(config);
+    // Shutdown-guard: keep a strong ref until process exit so the native
+    // _data_channel_wrap map is cleared (pc.close()) under a live env — see
+    // trackPc above. Not removed on close(); the exit hook re-closes (idempotent)
+    // in case a deferred datachannel dispatch repopulated the map.
+    trackPc(this._pc);
 
     // Wire ICE candidate callback
     this._pc.addEventListener('icecandidate', (event: RTCPeerConnectionIceEvent) => {
@@ -600,6 +643,11 @@ export class WebRTCTransport {
       } catch {
         // Best-effort
       }
+      // NOTE: keep the pc registered in `_livePcs` until process exit. A
+      // deferred `datachannel` dispatch (wrtc's uv-async) may re-populate the
+      // native map AFTER this first close; the exit guard re-closes it under a
+      // live env so the teardown finalizer sees empty maps. (Native Close()
+      // clears the map even on an already-closed pc — idempotent.)
       this._pc = null;
     }
     this._resetDcOpen();
