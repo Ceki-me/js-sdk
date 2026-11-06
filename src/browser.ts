@@ -716,7 +716,18 @@ export class Browser {
     if (opts.maskingMode !== undefined) msg.masking_mode = opts.maskingMode;
     if (opts.fingerprint !== undefined) msg.fingerprint = opts.fingerprint;
     if (opts.profile !== undefined) msg.profile = opts.profile;
-    this._sendRaw(msg);
+    // session.configure is a CONTROL message. The legacy front sent it over the
+    // ceki-cmd DC once the channel opened (the extension's p2p-manager applies
+    // the vault profile with a navigation barrier so cookies land before the
+    // first request). Sending it over the signaling WS also works, but the DC
+    // path is the canonical one and applies cookies with the vault barrier —
+    // route it through the session's chosen transport, like sendInput does.
+    const p2p = this._client._p2p;
+    if (p2p && !this._p2pFallback) {
+      await p2p.sendCdp(msg).catch(() => {});
+    } else {
+      this._sendRaw(msg);
+    }
   }
 
   async close(timeout = 10000): Promise<void> {
