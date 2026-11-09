@@ -658,9 +658,49 @@ export class Browser {
    */
   async sendInput(payload: Record<string, unknown>): Promise<void> {
     for (const cdp of toCdpInputCommands(payload)) {
-      // Fire-and-forget: input must not stall on a CDP response round-trip.
-      // send() routes through the session's chosen transport (_p2pFallback).
-      await this.send({ method: cdp.method, params: cdp.params }).catch(() => {});
+      // Fire-and-forget: input must not stall on a CDP response round-trip
+      // (each click/move would otherwise wait on a pending CDP + 30s timer,
+      // queuing up fast user input and making the webmor feel laggy). Route
+      // through the session's chosen transport — same as send() does.
+      await this._sendInputNoWait(cdp.method, cdp.params ?? {});
+    }
+  }
+
+  /**
+   * Fire-and-forget CDP input command on the session's chosen transport.
+   * Unlike send(), no pending entry / no response wait — the extension
+   * executes Input.dispatch* and does not need an ack for input.
+   * The command still carries an `id` because the extension's P2P DC handler
+   * only routes messages with `id != null` to the CDP path; we just never
+   * register a pending promise for the response.
+   */
+  private async _sendInputNoWait(
+    method: string,
+    params: Record<string, unknown>,
+  ): Promise<void> {
+    const id = this._cdpCounter++;
+    const p2p = this._client._p2p;
+    if (p2p && !this._p2pFallback) {
+      // P2P chosen — send over the ceki-cmd DC (sendCdp is fire-and-forget).
+      await p2p.sendCdp({
+        session_id: this.sessionId,
+        id,
+        method,
+        params,
+      }).catch(() => {});
+    } else {
+      // WS transport — fire-and-forget via signaling WS (no pending).
+      try {
+        this._client._wsSend({
+          type: 'cdp',
+          session_id: this.sessionId,
+          id,
+          method,
+          params,
+        });
+      } catch {
+        // input is best-effort — ignore WS-not-connected
+      }
     }
   }
 
@@ -676,7 +716,18 @@ export class Browser {
     if (opts.maskingMode !== undefined) msg.masking_mode = opts.maskingMode;
     if (opts.fingerprint !== undefined) msg.fingerprint = opts.fingerprint;
     if (opts.profile !== undefined) msg.profile = opts.profile;
-    this._sendRaw(msg);
+    // session.configure is a CONTROL message. The legacy front sent it over the
+    // ceki-cmd DC once the channel opened (the extension's p2p-manager applies
+    // the vault profile with a navigation barrier so cookies land before the
+    // first request). Sending it over the signaling WS also works, but the DC
+    // path is the canonical one and applies cookies with the vault barrier —
+    // route it through the session's chosen transport, like sendInput does.
+    const p2p = this._client._p2p;
+    if (p2p && !this._p2pFallback) {
+      await p2p.sendCdp(msg).catch(() => {});
+    } else {
+      this._sendRaw(msg);
+    }
   }
 
   async close(timeout = 10000): Promise<void> {
