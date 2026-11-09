@@ -7,3 +7,7 @@ tests/real-e2e/reports/
 # graphify knowledge-graph artifacts
 .graphifyignore
 graphify-out/
+
+# python test caches
+__pycache__/
+*.pyc
