@@ -54,7 +54,7 @@ Ceki speaks raw **CDP (Chrome DevTools Protocol)** — the same protocol Playwri
 - **Playwright** — `page.context.newCDPSession(page)` → `client.rent()`, then replace `cdpSession.send('DOM.getDocument')` with `browser.send({ method: 'DOM.getDocument' })`. Navigation, clicking, typing, and DOM queries work identically.
 - **Puppeteer** — `page._client().send('DOM.getDocument')` → `browser.send({ method: 'DOM.getDocument' })`. Same CDP method names and params.
 - **Selenium** — `driver.execute_cdp_cmd('DOM.getDocument', {})` → `browser.send({ method: 'DOM.getDocument' })`. Same method names, same parameter shapes.
-- **MCP** — Ceki is MCP-native. Connect it as an MCP server (`npx @ceki/sdk mcp`), and any MCP client (Claude Code, Cline, Cursor) gets browser tools — navigate, click, type, screenshot, captcha chat — without writing a single line of CDP code.
+- **MCP** — Ceki is MCP-native. Connect it as an MCP server (`npx -p @ceki/sdk ceki mcp`), and any MCP client (Claude Code, Cline, Cursor) gets browser tools — navigate, click, type, screenshot, captcha chat — without writing a single line of CDP code.
 
 ### Migration example: Playwright → Ceki
 

@@ -1257,6 +1257,8 @@ Commands:
   vault apply ID --session SID | --schedule N
   vault delete ID
 
+  mcp                        Start MCP stdio server (Claude Code, Cline, Cursor)
+
   contract list
   contract members <cid>
   contract tasks [cid]                (default: CEKI_CONTRACT_IDS)
@@ -1356,6 +1358,11 @@ async function main(): Promise<void> {
   }
   if (command === 'vault') {
     await cmdVault(rest);
+    return;
+  }
+  if (command === 'mcp') {
+    const { main: mcpMain } = await import('./mcp.js');
+    await mcpMain();
     return;
   }
 
