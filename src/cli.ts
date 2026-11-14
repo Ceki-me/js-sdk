@@ -1048,8 +1048,8 @@ async function cmdVault(args: string[]): Promise<void> {
         break;
       }
       case 'save': {
-        // ceki vault save FILE [--id N] [--label L]
-        // ceki vault save --session SID [--id N] [--label L] [--no-session-storage]
+        // ceki vault save FILE [--id N] [--label L] [--meta '<JSON>']
+        // ceki vault save --session SID [--id N] [--label L] [--no-session-storage] [--meta '<JSON>']
         const idRaw = parseFlag('--id');
         const label = parseFlag('--label');
         const filePath = rest[0] && !rest[0].startsWith('-') ? rest[0] : null;
@@ -1067,6 +1067,26 @@ async function cmdVault(args: string[]): Promise<void> {
             const { normalizeProfileForVault } = await import('./vault.js');
             envelope = normalizeProfileForVault(profile) as unknown as Record<string, unknown>;
           }
+          const metaRaw = parseFlag('--meta');
+          if (metaRaw != null) {
+            let meta: unknown;
+            try {
+              meta = JSON.parse(metaRaw);
+            } catch {
+              err('--meta must be valid JSON object', 'args');
+              process.exit(1);
+            }
+            if (typeof meta !== 'object' || meta === null || Array.isArray(meta)) {
+              err('--meta must be a JSON object', 'args');
+              process.exit(1);
+            }
+            const existing = envelope.meta;
+            if (existing && typeof existing === 'object' && !Array.isArray(existing)) {
+              Object.assign(existing, meta);
+            } else {
+              envelope.meta = meta;
+            }
+          }
           if (idRaw) {
             await client.vault.update(Number(idRaw), envelope as never, { label: label ?? null });
             vid = Number(idRaw);
@@ -1080,10 +1100,25 @@ async function cmdVault(args: string[]): Promise<void> {
           const liveClient = await ensureLiveClient();
           const browser = await liveClient.resume(sid, { human: null });
           try {
+            const metaRaw = parseFlag('--meta');
+            let meta: Record<string, unknown> | undefined;
+            if (metaRaw != null) {
+              try {
+                meta = JSON.parse(metaRaw);
+              } catch {
+                err('--meta must be valid JSON object', 'args');
+                process.exit(1);
+              }
+              if (typeof meta !== 'object' || meta === null || Array.isArray(meta)) {
+                err('--meta must be a JSON object', 'args');
+                process.exit(1);
+              }
+            }
             vid = await browser.vault.save({
               label: label ?? null,
               includeSessionStorage: !hasFlag('--no-session-storage'),
               overwrite: !!idRaw,
+              meta,
             });
           } finally {
             await closeClient(liveClient);
@@ -1252,8 +1287,8 @@ Commands:
 
   vault list [--json] [--per-page N]
   vault get ID [--json] [-o FILE]
-  vault save FILE [--id ID] [--label L]
-  vault save --session SID [--id ID] [--label L] [--no-session-storage]
+  vault save FILE [--id ID] [--label L] [--meta '<JSON>']
+  vault save --session SID [--id ID] [--label L] [--no-session-storage] [--meta '<JSON>']
   vault apply ID --session SID | --schedule N
   vault delete ID
 

@@ -143,6 +143,25 @@ describe('normalizeProfileForVault', () => {
     expect(out.localStorage).toEqual({ 'https://localhost': { user: '{"id":1}' } });
     expect(out.urls).toEqual([]);
   });
+
+  it('passes through meta (free-form credentials) when present', () => {
+    const flat = {
+      cookies: [],
+      meta: { platform: '23hq', login: 'technopastor', email: 'a@b.c' },
+    };
+    const out = normalizeProfileForVault(flat as never);
+    expect(out.meta).toEqual({ platform: '23hq', login: 'technopastor', email: 'a@b.c' });
+  });
+
+  it('does not add a meta key when absent', () => {
+    const out = normalizeProfileForVault({ cookies: [] } as never);
+    expect('meta' in out).toBe(false);
+  });
+
+  it('ignores a non-object meta', () => {
+    const out = normalizeProfileForVault({ cookies: [], meta: [1, 2, 3] } as never);
+    expect('meta' in out).toBe(false);
+  });
 });
 
 // ── minimalVaultProfile ────────────────────────────────────────────────────
