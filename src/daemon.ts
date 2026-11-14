@@ -269,6 +269,7 @@ export class DaemonServer {
     const mode = (params.mode as 'incognito' | 'main') ?? 'incognito';
     const fingerprintFrom = params.fingerprint_from as string | undefined;
     const vaultRaw = params.vault as string | number | undefined;
+    const slot = params.slot as number | undefined;
 
     const client = await connect(apiKey, connectOptions());
     let fpData: boolean | Record<string, unknown> = true;
@@ -281,12 +282,13 @@ export class DaemonServer {
       const asNum = Number(vaultRaw);
       vault = Number.isNaN(asNum) ? (JSON.parse(String(vaultRaw)) as Record<string, unknown>) : asNum;
     }
-    const browser = await client.rent(schedule, { human: null, fingerprint: fpData, mode, vault });
+    const browser = await client.rent(schedule, { human: null, fingerprint: fpData, mode, vault, slot });
     this._sessions.set(browser.sessionId, { client, browser });
     return {
       session_id: browser.sessionId,
       chat_topic_id: browser.chatTopicId,
       schedule_id: browser.scheduleId,
+      slot: slot ?? null,
       vault_session_id: browser._vaultSessionId,
     };
   }
