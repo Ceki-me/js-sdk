@@ -162,6 +162,17 @@ describe('normalizeProfileForVault', () => {
     const out = normalizeProfileForVault({ cookies: [], meta: [1, 2, 3] } as never);
     expect('meta' in out).toBe(false);
   });
+
+  it('folds empty-array storage from get into {} so the file can be saved back', () => {
+    // The API returns empty localStorage/sessionStorage as [] on get.
+    const out = normalizeProfileForVault({
+      cookies: [],
+      localStorage: [],
+      sessionStorage: [],
+    } as never);
+    expect(out.localStorage).toEqual({});
+    expect(out.sessionStorage).toEqual({});
+  });
 });
 
 // ── minimalVaultProfile ────────────────────────────────────────────────────

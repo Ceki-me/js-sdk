@@ -92,6 +92,9 @@ export function normalizeProfileForVault(profile: Profile | VaultEnvelope): Vaul
   const origin = typeof p.origin === 'string' && p.origin ? p.origin : 'https://localhost';
 
   function wrap(storage: unknown): Record<string, Record<string, string>> | undefined {
+    // The API returns empty storage as [] on get; fold it into {} so a
+    // get --output file can be saved back unchanged (mirrors python-sdk).
+    if (Array.isArray(storage) && storage.length === 0) return {};
     if (!isRecord(storage)) return undefined;
     if (isRecordRecord(storage)) return storage as Record<string, Record<string, string>>;
     return { [origin]: storage as Record<string, string> };
