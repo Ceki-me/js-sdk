@@ -114,6 +114,13 @@ export function normalizeProfileForVault(profile: Profile | VaultEnvelope): Vaul
     : new Date().toISOString();
   envelope.collectedAt = collectedAt;
 
+  // Free-form credentials/notes attached by the caller (e.g. CLI --meta).
+  // Profile snapshots from profile.export() never carry it, so this is a
+  // no-op for live snapshots; only a re-uploaded envelope can pass it through.
+  if (isRecord(p.meta)) {
+    envelope.meta = p.meta as Record<string, unknown>;
+  }
+
   return envelope;
 }
 
@@ -350,12 +357,21 @@ export class BrowserVault {
     domains?: string[];
     overwrite?: boolean;
     privacy?: number;
+    meta?: Record<string, unknown>;
   }): Promise<number> {
     const profile = await this._browser.profile.export({
       includeSessionStorage: opts?.includeSessionStorage,
       domains: opts?.domains,
     });
     const envelope = normalizeProfileForVault(profile);
+    if (opts?.meta && typeof opts.meta === 'object') {
+      const existing = envelope.meta;
+      if (existing && typeof existing === 'object' && !Array.isArray(existing)) {
+        Object.assign(existing, opts.meta);
+      } else {
+        envelope.meta = opts.meta;
+      }
+    }
     const bound = this._browser._vaultSessionId;
     if (opts?.overwrite || (bound != null && !opts?.label)) {
       if (bound == null) {

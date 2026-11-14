@@ -97,6 +97,8 @@ export interface VaultEnvelope {
   sessionStorage?: Record<string, Record<string, string>>;
   urls?: string[];
   collectedAt?: string;
+  /** Free-form credentials/notes attached by the caller (e.g. CLI --meta). */
+  meta?: Record<string, unknown>;
 }
 
 /**
