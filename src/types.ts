@@ -83,6 +83,13 @@ export interface RentOptions {
    * PUTs back onto it) or a raw profile envelope dict.
    */
   vault?: number | Record<string, unknown>;
+  /**
+   * Multi-rent slot (ev 14954): which parallel-session slot this rent targets.
+   * A balance worker holds one slot per browser; the same (browser, slot) pair
+   * re-rents the same live session, different slots are distinct sessions.
+   * 1..64.
+   */
+  slot?: number;
 }
 
 /**

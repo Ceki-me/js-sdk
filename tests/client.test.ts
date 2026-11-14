@@ -138,6 +138,51 @@ describe('rent()', () => {
     await rentPromise;
   });
 
+  it('forwards slot in rent WS message when given (ev 14954)', async () => {
+    const client = await createClient();
+    const ws = MockWebSocket.last();
+
+    const rentPromise = client.rent(42, { slot: 3 });
+
+    expect(ws.sent).toContainEqual({ type: 'rent', browser_id: 42, slot: 3 });
+
+    ws.receive({ type: 'rent_pending', event_id: 'evt-slot' });
+    ws.receive({
+      type: 'match',
+      event_id: 'evt-slot',
+      schedule_id: 42,
+      session_id: 'sess-slot',
+      chat_topic_id: null,
+      provider_user_id: 7,
+      browser_info: { ua: 'Chrome' },
+    });
+
+    await rentPromise;
+  });
+
+  it('omits slot in rent WS message when not given (backward compat)', async () => {
+    const client = await createClient();
+    const ws = MockWebSocket.last();
+
+    const rentPromise = client.rent(42);
+
+    expect(ws.sent).toContainEqual({ type: 'rent', browser_id: 42 });
+    expect(ws.sent.some((m: Record<string, unknown>) => 'slot' in m)).toBe(false);
+
+    ws.receive({ type: 'rent_pending', event_id: 'evt-noslot' });
+    ws.receive({
+      type: 'match',
+      event_id: 'evt-noslot',
+      schedule_id: 42,
+      session_id: 'sess-noslot',
+      chat_topic_id: null,
+      provider_user_id: 7,
+      browser_info: { ua: 'Chrome' },
+    });
+
+    await rentPromise;
+  });
+
   it('rejects with ProviderOffline on provider_offline error', async () => {
     const client = await createClient();
     const ws = MockWebSocket.last();
