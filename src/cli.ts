@@ -107,11 +107,20 @@ async function cmdRent(args: string[]): Promise<void> {
   let scheduleId: number | null = null;
   let fingerprintFrom: string | null = null;
   let vault: string | null = null;
+  let slot: number | null = null;
   let mode: 'incognito' | 'main' = 'incognito';
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--schedule' && args[i + 1]) scheduleId = parseInt(args[++i], 10);
     if (args[i] === '--fingerprint-from' && args[i + 1]) fingerprintFrom = args[++i];
     if (args[i] === '--vault' && args[i + 1]) vault = args[++i];
+    if (args[i] === '--slot' && args[i + 1]) {
+      const v = parseInt(args[++i], 10);
+      if (Number.isNaN(v) || v < 1 || v > 64) {
+        err('invalid --slot, must be 1..64', 'args');
+        process.exit(1);
+      }
+      slot = v;
+    }
     if (args[i] === '--mode' && args[i + 1]) {
       const v = args[++i];
       if (v !== 'incognito' && v !== 'main') {
@@ -154,6 +163,7 @@ async function cmdRent(args: string[]): Promise<void> {
       const rentParams: Record<string, unknown> = { api_key: apiKey, schedule: scheduleId, mode };
       if (fingerprintFrom) rentParams.fingerprint_from = fingerprintFrom;
       if (vault) rentParams.vault = vault;
+      if (slot != null) rentParams.slot = slot;
       const result = await _daemonRequest('/rent', rentParams) as Record<string, unknown>;
       saveSession(result.session_id as string, {
         session_id: result.session_id as string,
@@ -183,7 +193,7 @@ async function cmdRent(args: string[]): Promise<void> {
 
   const client = await connect(apiKey, connectOptions());
   try {
-    const browser = await client.rent(scheduleId, { human: null, fingerprint: fpData, mode, vault: vaultArg });
+    const browser = await client.rent(scheduleId, { human: null, fingerprint: fpData, mode, vault: vaultArg, slot: slot ?? undefined });
     saveSession(browser.sessionId, {
       session_id: browser.sessionId,
       chat_topic_id: browser.chatTopicId,
@@ -1258,7 +1268,7 @@ function printHelp(): void {
 Usage: ceki <command> [options]
 
 Commands:
-  rent --schedule N [--fingerprint-from PATH] [--vault ID|JSON]
+  rent --schedule N [--fingerprint-from PATH] [--vault ID|JSON] [--slot 1..64]
   my-browsers
   search [--limit N] [--filter k=v]...
   snapshot <sid> -o PATH

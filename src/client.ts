@@ -201,6 +201,7 @@ export class Client {
     const rentMsg: Record<string, unknown> = { type: 'rent', browser_id: scheduleId };
     if (opts?.mode) rentMsg.mode = opts.mode;
     if (opts?.pacingProfile) rentMsg.pacing_profile = opts.pacingProfile;
+    if (opts?.slot != null) rentMsg.slot = opts.slot;
     this._wsSend(rentMsg);
 
     const key = `rent:${scheduleId}`;
