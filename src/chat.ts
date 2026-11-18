@@ -83,12 +83,17 @@ export class BrowserChat {
     let filename: string;
 
     if (typeof source === 'string') {
-      const req = (globalThis as { require?: (id: string) => unknown }).require;
-      if (typeof req === 'undefined') {
+      // Same rule as state.ts: no static `node:fs` import (this module ships in
+      // the browser bundle too), and `globalThis.require` never worked — ESM
+      // has no `require` and a CJS bundle's `require` is module-local.
+      const getBuiltin = (globalThis as {
+        process?: { getBuiltinModule?: (name: string) => unknown };
+      }).process?.getBuiltinModule;
+      if (typeof getBuiltin !== 'function') {
         throw new Error('sendImage(path) is not available in the browser — pass a Buffer/File instead');
       }
-      const fs = req('node:fs') as { readFileSync(p: string): Buffer };
-      const path = req('node:path') as { basename(p: string): string };
+      const fs = getBuiltin('node:fs') as { readFileSync(p: string): Buffer };
+      const path = getBuiltin('node:path') as { basename(p: string): string };
       buf = fs.readFileSync(source);
       filename = path.basename(source);
     } else {

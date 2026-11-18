@@ -12,18 +12,42 @@ type NodeFs = {
 type NodePath = { join(...parts: string[]): string };
 type NodeOs = { homedir(): string };
 
+/**
+ * Reach the Node builtins without a static `import 'node:fs'`.
+ *
+ * A static import cannot be used here: this module is also pulled into the
+ * browser bundle (via browser.ts), where `node:fs` does not resolve. The
+ * previous approach — reading `globalThis.require` — never worked in either
+ * build: in ESM there is no `require` at all, and in the CJS bundle `require`
+ * is module-local, not on `globalThis`. `saveSession` swallowed the resulting
+ * throw, so state was silently never persisted.
+ *
+ * `process.getBuiltinModule` (Node >= 22.3) is the supported way to get a
+ * builtin from ESM. In the browser `process` is undefined, so `isNode()` is
+ * false and every disk-touching function stays a no-op.
+ */
+function getBuiltin(id: string): unknown {
+  const proc = (globalThis as {
+    process?: { getBuiltinModule?: (name: string) => unknown };
+  }).process;
+  const get = proc?.getBuiltinModule;
+  if (typeof get !== 'function') throw new Error(`node builtin unavailable: ${id}`);
+  return get.call(proc, id);
+}
+
 function nodeRequire(): { fs: NodeFs; path: NodePath; os: NodeOs } {
-  const req = (globalThis as { require?: (id: string) => unknown }).require;
-  if (typeof req === 'undefined') throw new Error('node:fs unavailable');
   return {
-    fs: req('node:fs') as NodeFs,
-    path: req('node:path') as NodePath,
-    os: req('node:os') as NodeOs,
+    fs: getBuiltin('node:fs') as NodeFs,
+    path: getBuiltin('node:path') as NodePath,
+    os: getBuiltin('node:os') as NodeOs,
   };
 }
 
-function isNode(): boolean {
-  return typeof (globalThis as { require?: unknown }).require === 'function';
+export function isNode(): boolean {
+  const proc = (globalThis as {
+    process?: { getBuiltinModule?: unknown };
+  }).process;
+  return typeof proc?.getBuiltinModule === 'function';
 }
 
 function statePath(node: { fs: NodeFs; path: NodePath; os: NodeOs }, sid: string): string {
