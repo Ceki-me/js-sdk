@@ -28,6 +28,14 @@ const MAX_RECONNECT_ATTEMPTS = 10;
 const PING_INTERVAL = 30000;
 const PONG_TIMEOUT = 90000;
 
+// P2P cold-start retry budget. A freshly matched provider is often still
+// booting (proxy/fingerprint/Chrome/extension) and the relay buffers our
+// webrtc.offer until the extension connects (~15-20s in dev). A single fixed
+// 15s wait < cold start made P2P silently fall back to WS every time. We now
+// retry the offer→DC handshake every RETRY_STEP_MS up to P2P_RETRY_TOTAL_MS.
+const P2P_RETRY_STEP_MS = 15000;
+const P2P_RETRY_TOTAL_MS = 90000;
+
 interface PendingRent {
   scheduleId: number;
   eventId: string | null;
@@ -235,11 +243,11 @@ export class Client {
         await Promise.race([
           this._p2pReadyPromise,
           new Promise<void>((_, reject) =>
-            setTimeout(() => reject(new Error('P2P timeout')), 15000),
+            setTimeout(() => reject(new Error('P2P timeout')), P2P_RETRY_TOTAL_MS),
           ),
         ]);
       } catch {
-        console.warn('p2p: transport not ready within 15s, CDP will use WS path');
+        console.warn('p2p: transport not ready within ' + (P2P_RETRY_TOTAL_MS / 1000) + 's, CDP will use WS path');
       }
     }
 
@@ -1046,6 +1054,15 @@ export class Client {
         { urls: 'stun:stun.l.google.com:19302' },
       ];
 
+      // Cold-start retry: a freshly matched provider is often still booting
+      // (proxy/fingerprint/Chrome/extension), so the relay buffers our
+      // webrtc.offer until the extension connects (~15-20s in dev). A single
+      // fixed wait (< cold start) made P2P silently fall back to WS every
+      // time. Retry the whole offer→DC handshake on a 15s cadence, up to a
+      // 90s total budget, rebuilding the transport each round (a closed pc
+      // can't be reused).
+      const deadline = Date.now() + P2P_RETRY_TOTAL_MS;
+
       // Yield to the microtask queue BEFORE constructing the RTCPeerConnection.
       // The legacy front does `await getIceServers()` right before
       // `new RTCPeerConnection` — that async fetch hands control back to the
@@ -1132,19 +1149,57 @@ export class Client {
       });
 
       // Wait for DC to open after offer is sent (DC was created inside createOffer).
-      // Signal _p2pReady only when DC is actually usable — rent() waits on this.
-      try {
-        await Promise.race([
-          transport.waitForDcOpen(),
-          new Promise<void>((_, reject) =>
-            setTimeout(() => reject(new Error('DC timeout')), 15000),
-          ),
-        ]);
-        this._p2pReady = true;
-      } catch {
-        console.warn('p2p: DC not open within 15s — P2P disabled, WS fallback');
-        await transport.close().catch(() => {});
-        this._p2p = null;
+      // Cold-start retry: provider may still be booting (relay buffers the offer
+      // until the extension connects, ~15-20s in dev). Give the DC a RETRY_STEP_MS
+      // window; if it doesn't open we tear the transport down and re-issue the
+      // offer on a fresh pc until the 90s budget is exhausted. _p2pReady is set
+      // only when DC is actually usable — rent() waits on this.
+      let opened = false;
+      while (Date.now() < deadline) {
+        const attempt = this._p2p ?? (() => {
+          // (the transport above was already assigned; this branch is for a
+          // rebuild after a timeout)
+          const t = new WebRTCTransport({
+            iceServers,
+            iceTransportPolicy: (typeof process !== 'undefined'
+              && process.env.CEKI_ICE_TRANSPORT_POLICY === 'relay')
+              ? 'relay'
+              : undefined,
+          });
+          t.onIceCandidate = transport.onIceCandidate;
+          t.onCdpMessage = transport.onCdpMessage;
+          t.onCaptureData = transport.onCaptureData;
+          t.onConnectionState = transport.onConnectionState;
+          this._p2p = t;
+          return t;
+        })();
+        try {
+          if (this._p2p !== attempt) this._p2p = attempt;
+          const offer = await attempt.createOffer();
+          await this._wsSend({
+            type: 'webrtc.offer',
+            session_id: sessionId,
+            sdp: offer,
+            fingerprint: attempt.localFingerprint ?? fingerprint,
+          });
+          await Promise.race([
+            attempt.waitForDcOpen(),
+            new Promise<void>((_, reject) =>
+              setTimeout(() => reject(new Error('DC timeout')), P2P_RETRY_STEP_MS),
+            ),
+          ]);
+          this._p2pReady = true;
+          opened = true;
+          break;
+        } catch {
+          console.warn('p2p: DC not open within ' + (P2P_RETRY_STEP_MS / 1000) + 's, retrying (budget to ' + (P2P_RETRY_TOTAL_MS / 1000) + 's)');
+          await attempt.close().catch(() => {});
+          this._p2p = null;
+          if (Date.now() < deadline) await new Promise<void>((r) => setTimeout(r, 500));
+        }
+      }
+      if (!opened) {
+        console.warn('p2p: P2P not established within ' + (P2P_RETRY_TOTAL_MS / 1000) + 's — WS fallback');
       }
     } catch (err) {
       // Fallback: P2P failed, WS path continues to work

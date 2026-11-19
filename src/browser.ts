@@ -1177,6 +1177,28 @@ export class Browser {
     this._pendingCdp.clear();
   }
 
+  /**
+   * Drop all in-flight CDP commands without rejecting them.
+   *
+   * Used on background-tab return: while the tab was hidden the browser
+   * throttled setTimeout, so a command's 30s timer did not fire and its
+   * response may have been lost (or the request never made it out over a
+   * throttled channel). Left in `_pendingCdp`, those entries stay until the
+   * throttled timer eventually runs — meanwhile the id counter keeps
+   * incrementing and, worse, a late response for a stale id can be routed to
+   * a newly-reused slot. Dropping them clears the timers (preventing the
+   * eventual 30s TimeoutError) and empties the map so fresh commands after
+   * return are clean. Unlike `_rejectAllPending` we do NOT reject: the callers
+   * (fire-and-forget input, keyboard sync) already treat no-ack as fine, and
+   * rejecting can surface spurious errors to the canvas.
+   */
+  dropPendingCdp(): void {
+    for (const [id, pending] of this._pendingCdp) {
+      clearTimeout(pending.timer);
+    }
+    this._pendingCdp.clear();
+  }
+
   private _cleanup(): void {
     this._client._activeBrowsers.delete(this.sessionId);
   }
