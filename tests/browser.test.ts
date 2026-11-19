@@ -248,6 +248,36 @@ describe('configure()', () => {
     expect(msg).toBeDefined();
     expect(msg!.masking_mode).toBe(true);
   });
+
+  it('passes proxy through to session.configure', async () => {
+    await browser.configure({
+      proxy: { scheme: 'http', host: '10.0.0.1', port: 3128, username: 'u', password: 'p' },
+    });
+    const msg = ws.sent.find(m => m.type === 'session.configure');
+    expect(msg!.proxy).toEqual({
+      scheme: 'http',
+      host: '10.0.0.1',
+      port: 3128,
+      username: 'u',
+      password: 'p',
+    });
+  });
+
+  it('sends proxy: null as an explicit clear', async () => {
+    // null must survive: a truthiness check would drop it and leave the
+    // previous proxy in place, so "clear" would silently do nothing.
+    await browser.configure({ proxy: null });
+    const msg = ws.sent.find(m => m.type === 'session.configure');
+    expect(msg).toBeDefined();
+    expect('proxy' in msg!).toBe(true);
+    expect(msg!.proxy).toBeNull();
+  });
+
+  it('omits the proxy key entirely when not supplied', async () => {
+    await browser.configure({ maskingMode: true });
+    const msg = ws.sent.find(m => m.type === 'session.configure');
+    expect('proxy' in msg!).toBe(false);
+  });
 });
 
 describe('close()', () => {
