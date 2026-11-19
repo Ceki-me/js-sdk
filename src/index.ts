@@ -45,6 +45,7 @@ export type {
   VaultProfile,
   SettableCookie,
   RentOptions,
+  ProxyConfig,
   ScreenshotOptions,
   ScreencastOptions,
   ScrollOptions,
