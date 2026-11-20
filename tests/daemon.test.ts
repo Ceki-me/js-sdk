@@ -6,6 +6,25 @@ import { DaemonServer, checkHealth } from '../src/daemon.js';
 const TEST_PORT = 18999; // non-standard port to avoid conflicts
 const TEST_HOST = '127.0.0.1';
 
+/**
+ * Bind an ephemeral port, then close it, so the port is known to be dead.
+ *
+ * Used by tests that assert "nothing is listening here". Probing a made-up
+ * port without this is flaky in the other direction — some other process may
+ * have taken it.
+ */
+async function freePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const srv = http.createServer();
+    srv.on('error', reject);
+    srv.listen(0, TEST_HOST, () => {
+      const addr = srv.address();
+      const port = typeof addr === 'object' && addr !== null ? addr.port : 0;
+      srv.close(() => resolve(port));
+    });
+  });
+}
+
 describe('DaemonServer', () => {
   let server: DaemonServer;
 
@@ -248,7 +267,12 @@ describe('Screenshot via daemon HTTP roundtrip', () => {
 
 describe('checkHealth', () => {
   it('returns null when daemon is not running', async () => {
-    const result = await checkHealth();
+    // Must not call checkHealth() with no argument: that probes the default
+    // port, where a real `ceki daemon` on the developer machine answers, and
+    // the test then fails for a reason that has nothing to do with the code.
+    // Bind a port, free it, and probe that instead.
+    const port = await freePort();
+    const result = await checkHealth(port);
     expect(result).toBeNull();
   });
 

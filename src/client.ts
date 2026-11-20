@@ -232,24 +232,8 @@ export class Client {
     });
 
     // 2. Init P2P from top-level (NOT the WS handler — see _onMatch note),
-    //    then wait for the transport (up to 15s).
-    if (this._p2pEnabled && match?.session_id && !this._p2pReady) {
-      this._initP2P(String(match.session_id)).catch((err) => {
-        console.warn('p2p: init failed after match:', err);
-      });
-    }
-    if (this._p2pEnabled && !this._p2pReady) {
-      try {
-        await Promise.race([
-          this._p2pReadyPromise,
-          new Promise<void>((_, reject) =>
-            setTimeout(() => reject(new Error('P2P timeout')), P2P_RETRY_TOTAL_MS),
-          ),
-        ]);
-      } catch {
-        console.warn('p2p: transport not ready within ' + (P2P_RETRY_TOTAL_MS / 1000) + 's, CDP will use WS path');
-      }
-    }
+    //    then wait for the transport (up to the cold-start retry budget).
+    await this._startP2PFor(String(match.session_id));
 
     // 3. Create and configure browser
     const humanizer = this._resolveHumanizer(opts);
@@ -280,57 +264,108 @@ export class Client {
   }
 
   async resume(sessionId: string, opts?: RentOptions): Promise<Browser> {
-    this._wsSend({ type: 'resume', session_id: sessionId });
-
-    return new Promise<Browser>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this._pendingResumes.delete(sessionId);
-        reject(new TimeoutError('Resume timed out after 10s'));
-      }, 10000);
-
-      this._pendingResumes.set(sessionId, {
-        sessionId,
-        opts,
-        resolve: (match: Match) => {
-          const humanizer = this._resolveHumanizer(opts);
-          const browser = new Browser(this, match, humanizer);
-          this._activeBrowsers.set(browser.sessionId, browser);
-          resolve(browser);
-        },
-        reject,
-        timer,
-      });
-    });
+    return this._joinExisting('resume', sessionId, opts);
   }
 
   async join(scheduleId: number, opts?: RentOptions): Promise<Browser> {
-    this._wsSend({ type: 'attach', schedule_id: scheduleId });
+    return this._joinExisting('attach', scheduleId, opts);
+  }
 
-    return new Promise<Browser>((resolve, reject) => {
+  /**
+   * Resume or attach to a session that already exists, then bring P2P up.
+   *
+   * Both paths used to skip P2P entirely: only `rent()` called `_initP2P`, so
+   * a client that resumed a live session ran every CDP command over the relay
+   * WS and never opened a data channel. That is the common case for a
+   * long-lived holder — it resumes on start and reconnects after a drop — so
+   * the fast path was in practice never taken.
+   *
+   * Beyond speed this is a correctness matter on the WS path: CDP responses
+   * are routed by renter id through the relay's `renters` map, so a second
+   * connection under the same agent token displaces the holder and its
+   * responses stop being delivered. Over a data channel that map is not
+   * involved at all.
+   */
+  private async _joinExisting(
+    kind: 'resume' | 'attach',
+    target: string | number,
+    opts?: RentOptions,
+  ): Promise<Browser> {
+    const isResume = kind === 'resume';
+
+    this._wsSend(
+      isResume
+        ? { type: 'resume', session_id: target }
+        : { type: 'attach', schedule_id: target },
+    );
+
+    const match = await new Promise<Match>((resolve, reject) => {
       const timer = setTimeout(() => {
-        this._pendingAttaches.delete(scheduleId);
-        reject(new TimeoutError('Join timed out after 90s'));
-      }, 90000);
+        if (isResume) this._pendingResumes.delete(String(target));
+        else this._pendingAttaches.delete(Number(target));
+        reject(new TimeoutError(
+          isResume ? 'Resume timed out after 10s' : 'Join timed out after 90s',
+        ));
+      }, isResume ? 10000 : 90000);
 
-      this._pendingAttaches.set(scheduleId, {
-        scheduleId,
-        opts,
-        resolve: (match: Match) => {
-          const humanizer = this._resolveHumanizer(opts);
-          const browser = new Browser(this, match, humanizer);
-          this._activeBrowsers.set(browser.sessionId, browser);
-          if (opts?.maskingMode) {
-            browser.configure({ maskingMode: true }).catch(() => {});
-          }
-          if (opts?.fingerprint) {
-            browser.configure({ fingerprint: opts.fingerprint }).catch(() => {});
-          }
-          resolve(browser);
-        },
-        reject,
-        timer,
-      });
+      const pending = { resolve, reject, timer, opts };
+      if (isResume) {
+        this._pendingResumes.set(String(target), { sessionId: String(target), ...pending });
+      } else {
+        this._pendingAttaches.set(Number(target), { scheduleId: Number(target), ...pending });
+      }
     });
+
+    await this._startP2PFor(String(match.session_id));
+
+    const humanizer = this._resolveHumanizer(opts);
+    const browser = new Browser(this, match, humanizer);
+    this._activeBrowsers.set(browser.sessionId, browser);
+    if (opts?.maskingMode) {
+      browser.configure({ maskingMode: true }).catch(() => {});
+    }
+    if (opts?.fingerprint) {
+      browser.configure({ fingerprint: opts.fingerprint }).catch(() => {});
+    }
+    return browser;
+  }
+
+  /**
+   * Bring the P2P transport up for a session we now own, and wait for it.
+   *
+   * Must be called from the top-level API, never from the WS onmessage
+   * handler: `_initP2P` creates the RTCPeerConnection and the offer, and doing
+   * that inside the handler stalls `createOffer` so the offer never goes out
+   * and the command channel never opens (see the `_onMatch` note).
+   *
+   * ICE servers are fetched first when the caller has not supplied them. TURN
+   * is what makes P2P work across NAT — STUN-only candidates get filtered by
+   * the extension and ICE never completes. The fetch is bounded (3s) and its
+   * failure is not fatal: the offer still goes out on the default STUN config.
+   */
+  private async _startP2PFor(sessionId: string | null | undefined): Promise<void> {
+    if (!this._p2pEnabled || !sessionId) return;
+    if (this._p2pReady) return;
+
+    if (this._p2pIceServers === null) {
+      const servers = await this._fetchIceServers();
+      if (servers !== null) this._p2pIceServers = servers;
+    }
+
+    this._initP2P(String(sessionId)).catch((err) => {
+      console.warn('p2p: init failed after match:', err);
+    });
+
+    try {
+      await Promise.race([
+        this._p2pReadyPromise,
+        new Promise<void>((_, reject) =>
+          setTimeout(() => reject(new Error('P2P timeout')), P2P_RETRY_TOTAL_MS),
+        ),
+      ]);
+    } catch {
+      console.warn('p2p: transport not ready within ' + (P2P_RETRY_TOTAL_MS / 1000) + 's, CDP will use WS path');
+    }
   }
 
   async close(): Promise<void> {

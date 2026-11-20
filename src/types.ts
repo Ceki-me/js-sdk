@@ -93,6 +93,26 @@ export interface RentOptions {
 }
 
 /**
+ * Outbound proxy for a rental.
+ *
+ * Applied by the extension through `chrome.proxy.settings`, scoped to the
+ * rental's incognito window — the provider's own traffic keeps its normal
+ * route. Applied as a per-rent override that is restored when the session
+ * ends, so it does not leak into the next rental.
+ *
+ * Set it BEFORE the first navigation. The profile is warmed against one egress
+ * IP: cookies and fingerprint are tied to it, and switching mid-session makes
+ * the pair inconsistent, which is exactly what challenge systems look for.
+ */
+export interface ProxyConfig {
+  scheme?: 'http' | 'https' | 'socks5';
+  host: string;
+  port: number;
+  username?: string;
+  password?: string;
+}
+
+/**
  * Vault session `data` envelope — the decrypted profile payload stored on
  * `/api/vault/sessions` (see ceki-reserch SPEC_VAULT_SESSIONS.md) and
  * accepted by the extension's `session.configure(profile=...)`.

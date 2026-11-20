@@ -708,6 +708,16 @@ export class Browser {
     maskingMode?: boolean;
     fingerprint?: boolean | Record<string, unknown>;
     profile?: import('./types.js').VaultProfile;
+    /**
+     * Route this rental through a proxy. `null` clears the per-rent override
+     * and restores whatever config the extension had before; omitting the key
+     * leaves the current route untouched.
+     *
+     * Set it before the first navigation: the profile is warmed against one
+     * egress IP, and swapping mid-session leaves cookies/fingerprint tied to
+     * an address that no longer matches.
+     */
+    proxy?: import('./types.js').ProxyConfig | null;
   }): Promise<void> {
     const msg: Record<string, unknown> = {
       type: 'session.configure',
@@ -716,6 +726,9 @@ export class Browser {
     if (opts.maskingMode !== undefined) msg.masking_mode = opts.maskingMode;
     if (opts.fingerprint !== undefined) msg.fingerprint = opts.fingerprint;
     if (opts.profile !== undefined) msg.profile = opts.profile;
+    // `null` is meaningful here — it means "clear", so a truthiness check would
+    // silently drop it and leave the previous proxy in place.
+    if (opts.proxy !== undefined) msg.proxy = opts.proxy;
     // session.configure is a CONTROL message. The legacy front sent it over the
     // ceki-cmd DC once the channel opened (the extension's p2p-manager applies
     // the vault profile with a navigation barrier so cookies land before the
