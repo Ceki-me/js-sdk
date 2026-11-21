@@ -314,6 +314,44 @@ ceki stop $SID
 
 The CLI persists session state locally — after `rent` it saves the session ID so subsequent commands resume it by SID without re-renting.
 
+### Token-lean page graph (`ceki page` / `ceki action`)
+
+For agent workflows, `snapshot` (a screenshot) is expensive to *read*: every
+page view costs a vision call. The SDK ships an optional **zerodom**-powered
+interaction graph — a deterministic, token-lean DOM→graph that lets the agent
+see interactive nodes (`[04] a 'Arts and Humanities'`) and act on them by
+number, without screenshots or OCR:
+
+```bash
+npm install @vexralabs/zerodom   # optional, enables page/action
+
+ceki page $SID                  # → {nodes: [...], compact: "[01] a 'Home' …", url}
+ceki action $SID 'click[04]'    # click node 04 (CSS selector resolved internally)
+ceki action $SID 'fill[02]:crypto'  # type into node 02
+```
+
+`page` returns the graph as `compact` text plus each node's CSS `selector`/
+`action` for use with `action`. `action` re-renders the graph after the
+operation and returns a `+`/`-`/`~` diff of what changed — the agent sees the
+delta, not the whole page.
+
+Programmatic (TypeScript):
+
+```ts
+import { connect } from '@ceki/sdk';
+
+const client = await connect('ag_...');
+const { browser } = await client.rent({ scheduleId: SCHEDULE });
+
+const g = await browser.page();                // interaction graph
+await browser.act('fill[02]:crypto');          // type into search
+await browser.act('click[03]');                // submit search
+const { diff } = await browser.act('click[04]');
+```
+
+`@vexralabs/zerodom` is an **optional** dependency — the core SDK works
+without it; `page()`/`act()` throw a clear error until it's installed.
+
 ### Commands
 
 #### Discovery and lifecycle
@@ -337,6 +375,8 @@ The CLI persists session state locally — after `rent` it saves the session ID 
 | `scroll SID X Y DY [--no-human\|--raw]` | Scroll from (X, Y) by `DY` pixels (eased by default; `--no-human` for raw CDP wheel) |
 | `screenshot SID -o FILE [--format png\|jpeg] [--full]` | Save screenshot |
 | `snapshot SID -o FILE` | Screenshot + new chat messages |
+| `page SID [--url URL]` | Token-lean interaction graph (zerodom) |
+| `action SID NODE [--value TEXT]` | Act on a graph node: `click[45]` / `fill[45]:text` |
 | `switch-tab SID` | Switch active tab |
 | `upload SID --selector CSS --file PATH [--filename NAME]` | Attach file to `<input type="file">` |
 

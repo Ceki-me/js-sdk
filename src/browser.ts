@@ -13,6 +13,26 @@ import { HumanProfile } from './humanize/profile.js';
 import { keymapForChar } from './humanize/keymap.js';
 export type { Humanizer, HumanProfile };
 
+// Optional dependency: zerodom's deterministic DOM→interaction-graph parser.
+// Loaded lazily so the core SDK works without it; `page()`/`act()` throw a
+// clear error when it is missing.
+let _zerodom: typeof import('@vexralabs/zerodom') | null = null;
+function _loadZerodom(): typeof import('@vexralabs/zerodom') {
+  if (_zerodom === null) {
+    try {
+      _zerodom = require('@vexralabs/zerodom');
+    } catch {
+      _zerodom = undefined as unknown as typeof import('@vexralabs/zerodom') | null;
+      throw new Error(
+        'page()/act() require the optional dependency `@vexralabs/zerodom`: ' +
+        'npm install @vexralabs/zerodom',
+      );
+    }
+  }
+  if (!_zerodom) throw new Error('zerodom failed to load');
+  return _zerodom;
+}
+
 interface PendingCdp {
   resolve: (value: unknown) => void;
   reject: (err: Error) => void;
@@ -423,6 +443,171 @@ export class Browser {
       chat: chatMessages,
       ts: new Date(),
     };
+  }
+
+  private async _outerHtml(timeout = 30000): Promise<string> {
+    const resp = await this.send({
+      method: 'Runtime.evaluate',
+      params: { expression: 'document.documentElement.outerHTML', returnByValue: true },
+    }, timeout) as Record<string, unknown>;
+    const result = (resp?.result ?? {}) as Record<string, unknown>;
+    const value = result.value;
+    if (typeof value !== 'string' || !value) {
+      throw new Error('page: Runtime.evaluate returned no outerHTML');
+    }
+    return value;
+  }
+
+  /**
+   * Return a token-lean interaction graph of the current page (zerodom).
+   *
+   * Reduces the raw `outerHTML` to an ordered list of interactive nodes
+   * (`[04] a 'Arts and Humanities'`), each mapped 1:1 to a CSS selector usable
+   * with {@link act}. Roughly 60-90% fewer tokens than the raw HTML.
+   */
+  async page(opts: { url?: string; viewportOnly?: boolean; timeout?: number } = {}): Promise<Record<string, unknown>> {
+    const { url, viewportOnly, timeout = 30000 } = opts;
+    const zd = _loadZerodom();
+    const html = await this._outerHtml(timeout);
+    const graph = zd.parseHtml(html, url ?? 'about:blank', viewportOnly ?? false);
+
+    const compact = graph.toCompactText();
+    let nodes: Record<string, unknown>[] = [];
+    let meta: Record<string, unknown> = {};
+    try {
+      const payload = JSON.parse(graph.toJson()) as Record<string, unknown>;
+      meta = (payload.metadata ?? {}) as Record<string, unknown>;
+      const raw = (payload.nodes ?? []) as Record<string, unknown>[];
+      nodes = raw
+        .filter((n) => n && typeof n.id === 'string')
+        .map((n) => ({
+          id: n.id, type: n.type, role: n.role, label: n.label,
+          selector: n.selector, action: n.action, href: n.href,
+        }));
+    } catch {
+      nodes = [];
+    }
+    return {
+      ok: true,
+      nodes,
+      compact,
+      url: (meta.url as string) ?? url ?? 'about:blank',
+      parsingLatencyMs: meta.parsing_latency_ms ?? null,
+    };
+  }
+
+  /**
+   * Execute an action on an interaction-graph node (`click[45]`, `fill[45]:text`).
+   *
+   * Resolves the node's CSS selector from a freshly parsed graph, dispatches
+   * it over CDP, then returns the `+`/`-`/`~` diff of the re-rendered graph.
+   */
+  async act(node: string, value?: string, timeout = 30000): Promise<Record<string, unknown>> {
+    const zd = _loadZerodom();
+
+    // Parse "click[45]" | "fill[45]" | "fill[45]:text" | "45" | "node_45".
+    let action: string | null = null;
+    let nodeValue = value;
+    let handle = node;
+    if (node.includes('[')) {
+      action = node.slice(0, node.indexOf('['));
+      const rest = node.slice(node.indexOf('[') + 1);
+      const bracketEnd = rest.indexOf(']');
+      const idx = bracketEnd >= 0 ? rest.slice(0, bracketEnd) : rest;
+      if (bracketEnd >= 0 && bracketEnd + 1 < rest.length) {
+        const inline = rest.slice(bracketEnd + 1); // starts with ':'
+        if (nodeValue === undefined) nodeValue = inline.startsWith(':') ? inline.slice(1) : inline;
+      }
+      handle = idx;
+    }
+
+    const html = await this._outerHtml(timeout);
+    const graph = zd.parseHtml(html, 'about:blank');
+    let rawNodes: Record<string, unknown>[] = [];
+    try {
+      const payload = JSON.parse(graph.toJson()) as Record<string, unknown>;
+      rawNodes = (payload.nodes ?? []) as Record<string, unknown>[];
+    } catch {
+      rawNodes = [];
+    }
+
+    let idxNum: string | null = null;
+    if (handle.startsWith('node_')) {
+      idxNum = handle;
+    } else {
+      const digits = (handle.match(/\d/g) ?? []).join('');
+      if (digits) idxNum = `node_${String(parseInt(digits, 10)).padStart(2, '0')}`;
+    }
+    const target = rawNodes.find((n) => n.id === idxNum);
+    if (!target) throw new Error(`act: unknown node ${node!} (no such node on page)`);
+
+    const selector = target.selector;
+    const nodeAction = action ?? (target.action as string | undefined) ?? 'click';
+    if (typeof selector !== 'string' || !selector) {
+      throw new Error(`act: node ${node!} has no CSS selector`);
+    }
+
+    let expr: string;
+    if (nodeAction === 'fill') {
+      if (nodeValue === undefined) {
+        throw new Error(`act: fill[..] for node ${node!} requires a value (fill[N]:"text" or value arg)`);
+      }
+      const qs = JSON.stringify(selector);
+      const v = JSON.stringify(nodeValue);
+      // Native value setter (`Object.getOwnPropertyDescriptor(...).set.call`)
+      // throws "Illegal invocation" in modern Chromium, so assign directly —
+      // works for <input> and <textarea> alike. input/change so frameworks hear it.
+      expr =
+        `(function(){var el=document.querySelector(${qs});if(!el)return{ok:false,error:'no element'};` +
+        `el.focus();el.value=${v};` +
+        `el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));` +
+        `return{ok:true,value:el.value};})()`;
+    } else if (nodeAction === 'click') {
+      const qs = JSON.stringify(selector);
+      expr = `(function(){var el=document.querySelector(${qs});if(!el)return{ok:false,error:'no element'};` +
+        `el.scrollIntoView({block:'center'});el.click();return{ok:true};})()`;
+    } else if (nodeAction === 'js' || nodeAction === 'eval') {
+      expr = value ?? '';
+    } else {
+      throw new Error(`act: unsupported action ${nodeAction!}`);
+    }
+
+    const resp = await this.send({
+      method: 'Runtime.evaluate',
+      params: { expression: expr, returnByValue: true },
+    }, timeout) as Record<string, unknown>;
+    const result = (resp?.result ?? {}) as Record<string, unknown>;
+    if (resp?.exceptionDetails) {
+      throw new Error(`act: JS error on ${node!}: ${String((resp.exceptionDetails as {exception?: {description?: string}}).exception?.description ?? resp.exceptionDetails)}`);
+    }
+    const val = result.value;
+    if (val && typeof val === 'object' && (val as {ok?: boolean}).ok === false) {
+      throw new Error(`act: could not act on ${node!}: ${String((val as {error?: string}).error)}`);
+    }
+
+    // Diff: re-render and compare.
+    let diff = '';
+    try {
+      const newHtml = await this._outerHtml(timeout);
+      const newGraph = zd.parseHtml(newHtml, 'about:blank');
+      diff = _diffCompact(graph.toCompactText(), newGraph.toCompactText());
+    } catch {
+      diff = '';
+    }
+    return { ok: true, diff, nodes: rawNodes.length, url: await this._currentLocation(timeout) };
+  }
+
+  private async _currentLocation(timeout = 30000): Promise<string> {
+    try {
+      const resp = await this.send({
+        method: 'Runtime.evaluate',
+        params: { expression: 'location.href', returnByValue: true },
+      }, timeout) as Record<string, unknown>;
+      const v = (resp?.result as Record<string, unknown>)?.value;
+      return typeof v === 'string' ? v : '';
+    } catch {
+      return '';
+    }
   }
 
   private static _detectMime(filename: string): string {
@@ -1363,4 +1548,29 @@ export function toCdpInputCommands(payload: Record<string, unknown>): CdpInputCo
     }
   }
   return out;
+}
+
+/** Best-effort line diff of two compact graph texts (`+`/`-`/`~`). */
+export function _diffCompact(before: string, after: string): string {
+  const b = before.split('\n').map((l) => l.trim()).filter(Boolean);
+  const a = after.split('\n').map((l) => l.trim()).filter(Boolean);
+  const out: string[] = [];
+  // Simple LCS-based diff (small graphs; fine for ~60-200 lines).
+  const rows = b.length + 1;
+  const cols = a.length + 1;
+  const dp: number[][] = Array.from({ length: rows }, () => new Array(cols).fill(0));
+  for (let i = b.length - 1; i >= 0; i--) {
+    for (let j = a.length - 1; j >= 0; j--) {
+      dp[i][j] = b[i] === a[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+    }
+  }
+  let i = 0, j = 0;
+  while (i < b.length && j < a.length) {
+    if (b[i] === a[j]) { i++; j++; }
+    else if (dp[i + 1][j] >= dp[i][j + 1]) { out.push(`- ${b[i]}`); i++; }
+    else { out.push(`+ ${a[j]}`); j++; }
+  }
+  while (i < b.length) out.push(`- ${b[i++]}`);
+  while (j < a.length) out.push(`+ ${a[j++]}`);
+  return out.join('\n');
 }
