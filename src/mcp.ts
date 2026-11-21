@@ -195,6 +195,32 @@ export class CekiMcpServer {
       return text({ screenshot: snap.screenshot, chat: snap.chat, ts: snap.ts.toISOString() });
     });
 
+    mcp.registerTool('browser_page', {
+      title: 'Page interaction graph',
+      description:
+        'Return a token-lean interaction graph of the active page (zerodom). ' +
+        'Nodes like [04] a \'Arts and Humanities\' map 1:1 to CSS selectors ' +
+        'usable with browser_action.',
+      inputSchema: {
+        viewport_only: z.boolean().optional().describe('Drop nodes outside the viewport'),
+      },
+    }, async (args) => {
+      return text(await this.requireBrowser().page({ viewportOnly: args.viewport_only }));
+    });
+
+    mcp.registerTool('browser_action', {
+      title: 'Act on a page node',
+      description:
+        'Act on an interaction-graph node from browser_page — click[45], ' +
+        'fill[45]:text or fill[45] with value. Returns the graph diff.',
+      inputSchema: {
+        node: z.string().describe('Node handle: 45, click[45], fill[45]:text'),
+        value: z.string().optional().describe('Text for fill actions'),
+      },
+    }, async (args) => {
+      return text(await this.requireBrowser().act(args.node, args.value));
+    });
+
     mcp.registerTool('browser_cdp', {
       title: 'Send raw CDP command',
       description:
