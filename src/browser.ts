@@ -554,10 +554,12 @@ export class Browser {
       }
       const qs = JSON.stringify(selector);
       const v = JSON.stringify(nodeValue);
+      // Native value setter (`Object.getOwnPropertyDescriptor(...).set.call`)
+      // throws "Illegal invocation" in modern Chromium, so assign directly —
+      // works for <input> and <textarea> alike. input/change so frameworks hear it.
       expr =
         `(function(){var el=document.querySelector(${qs});if(!el)return{ok:false,error:'no element'};` +
-        `el.focus();var setter=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value');` +
-        `if(setter&&setter.set)setter.set.call(el,${v});else el.value=${v};` +
+        `el.focus();el.value=${v};` +
         `el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));` +
         `return{ok:true,value:el.value};})()`;
     } else if (nodeAction === 'click') {
