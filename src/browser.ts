@@ -586,13 +586,27 @@ export class Browser {
     }
 
     // Diff: re-render and compare.
+    // Click may have started a navigation — the first re-read can hit a
+    // transient empty document. Retry with a short settle pause; the diff
+    // itself is best-effort and must never fail the action.
     let diff = '';
-    try {
-      const newHtml = await this._outerHtml(timeout);
-      const newGraph = zd.parseHtml(newHtml, 'about:blank');
-      diff = _diffCompact(graph.toCompactText(), newGraph.toCompactText());
-    } catch {
-      diff = '';
+    let newHtml = '';
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (attempt > 0) await new Promise((r) => setTimeout(r, 250));
+      try {
+        newHtml = await this._outerHtml(timeout);
+        if (newHtml) break;
+      } catch {
+        // transient during navigation — retry
+      }
+    }
+    if (newHtml) {
+      try {
+        const newGraph = zd.parseHtml(newHtml, 'about:blank');
+        diff = _diffCompact(graph.toCompactText(), newGraph.toCompactText());
+      } catch {
+        diff = '';
+      }
     }
     return { ok: true, diff, nodes: rawNodes.length, url: await this._currentLocation(timeout) };
   }
