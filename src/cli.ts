@@ -337,6 +337,71 @@ function parseNoHuman(args: string[]): boolean {
   return args.includes('--no-human') || args.includes('--raw');
 }
 
+async function cmdPage(sid: string, args: string[]): Promise<void> {
+  const url = args.find((a) => a.startsWith('--url') && !a.startsWith('--url=')) || null;
+  const urlValue = url ? args[args.indexOf(url) + 1] : (args.find((a) => a.startsWith('--url='))?.split('=')[1] ?? null);
+  const viewportOnly = args.includes('--viewport-only');
+
+  if (await isRunning()) {
+    try {
+      const result = await _daemonRequest('/page', {
+        session_id: sid,
+        url: urlValue,
+        viewport_only: viewportOnly,
+      }) as Record<string, unknown>;
+      out(result);
+      return;
+    } catch (e) {
+      err((e as Error).message, 'daemon');
+      process.exit(6);
+    }
+  }
+
+  const apiKey = getApiKey();
+  const [client, browser] = await resumeBrowser(apiKey, sid);
+  try {
+    const result = await browser.page({ url: urlValue ?? undefined, viewportOnly });
+    out(result);
+  } finally {
+    await closeClient(client);
+  }
+}
+
+async function cmdAction(sid: string, args: string[]): Promise<void> {
+  const node = args.find((a) => !a.startsWith('--'));
+  if (!node) {
+    err('node is required (e.g. 45, click[45], fill[45]:text)', 'args');
+    process.exit(1);
+  }
+  let value: string | undefined;
+  const vIdx = args.indexOf('--value');
+  if (vIdx >= 0 && args[vIdx + 1]) value = args[vIdx + 1];
+
+  if (await isRunning()) {
+    try {
+      const result = await _daemonRequest('/action', {
+        session_id: sid,
+        node,
+        value,
+      }) as Record<string, unknown>;
+      out(result);
+      return;
+    } catch (e) {
+      err((e as Error).message, 'daemon');
+      process.exit(6);
+    }
+  }
+
+  const apiKey = getApiKey();
+  const [client, browser] = await resumeBrowser(apiKey, sid);
+  try {
+    const result = await browser.act(node, value);
+    out(result);
+  } finally {
+    await closeClient(client);
+  }
+}
+
 async function cmdNavigate(sid: string, args: string[]): Promise<void> {
   const url = args.find((a) => !a.startsWith('--'));
   if (!url) {
@@ -1272,6 +1337,8 @@ Commands:
   my-browsers
   search [--limit N] [--filter k=v]...
   snapshot <sid> -o PATH
+  page <sid> [--url URL] [--viewport-only]
+  action <sid> <node> [--value TEXT]   (node: 45 | click[45] | fill[45]:text)
   screenshot <sid> -o PATH [--full] [--format png|jpeg]
   navigate <sid> <url> [--no-human|--raw]
   click <sid> <x> <y> [--no-human|--raw]
@@ -1429,6 +1496,12 @@ async function main(): Promise<void> {
       break;
     case 'navigate':
       await cmdNavigate(rest[0], rest.slice(1));
+      break;
+    case 'page':
+      await cmdPage(rest[0], rest.slice(1));
+      break;
+    case 'action':
+      await cmdAction(rest[0], rest.slice(1));
       break;
     case 'click':
       await cmdClick(rest[0], rest.slice(1));

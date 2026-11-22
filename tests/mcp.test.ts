@@ -14,13 +14,15 @@ const EXPECTED_TOOLS = [
   'browser_scroll',
   'browser_screenshot',
   'browser_snapshot',
+  'browser_page',
+  'browser_action',
   'browser_cdp',
   'browser_captcha',
   'browser_release',
 ];
 
 describe('MCP server', () => {
-  it('ceki mcp starts and tools/list returns the 11 browser tools', async () => {
+  it('ceki mcp starts and tools/list returns the 13 browser tools', async () => {
     const transport = new StdioClientTransport({
       command: process.execPath,
       args: [CLI_PATH, 'mcp'],

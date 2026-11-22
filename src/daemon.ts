@@ -125,6 +125,8 @@ const _ENDPOINTS: Record<string, string> = {
   '/configure': '_handleConfigure',
   '/screenshot': '_handleScreenshot',
   '/snapshot': '_handleSnapshot',
+  '/page': '_handlePage',
+  '/action': '_handleAction',
   '/stop': '_handleStop',
   '/chat/send': '_handleChatSend',
   '/chat/next': '_handleChatNext',
@@ -377,6 +379,25 @@ export class DaemonServer {
       ts: m.created_at,
     }));
     return { screenshot: snap.screenshot, chat: chatList, ts: snap.ts.toISOString() };
+  }
+
+  private async _handlePage(params: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const sessionId = params.session_id as string;
+    const entry = this._sessions.get(sessionId);
+    if (!entry) throw new SessionNotFound();
+    return await entry.browser.page({
+      url: (params.url as string | undefined) ?? undefined,
+      viewportOnly: Boolean(params.viewport_only),
+    });
+  }
+
+  private async _handleAction(params: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const sessionId = params.session_id as string;
+    const node = params.node as string;
+    if (!node) throw new Error('node required');
+    const entry = this._sessions.get(sessionId);
+    if (!entry) throw new SessionNotFound();
+    return await entry.browser.act(node, params.value as string | undefined);
   }
 
   private async _handleStop(params: Record<string, unknown>): Promise<void> {
