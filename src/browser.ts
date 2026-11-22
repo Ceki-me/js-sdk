@@ -547,21 +547,30 @@ export class Browser {
       throw new Error(`act: node ${node!} has no CSS selector`);
     }
 
-    let expr: string;
+    let expr: string | null = null;
+    let skipEval = false;
     if (nodeAction === 'fill') {
       if (nodeValue === undefined) {
         throw new Error(`act: fill[..] for node ${node!} requires a value (fill[N]:"text" or value arg)`);
       }
-      const qs = JSON.stringify(selector);
-      const v = JSON.stringify(nodeValue);
-      // Native value setter (`Object.getOwnPropertyDescriptor(...).set.call`)
-      // throws "Illegal invocation" in modern Chromium, so assign directly —
-      // works for <input> and <textarea> alike. input/change so frameworks hear it.
-      expr =
-        `(function(){var el=document.querySelector(${qs});if(!el)return{ok:false,error:'no element'};` +
-        `el.focus();el.value=${v};` +
-        `el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));` +
-        `return{ok:true,value:el.value};})()`;
+      // Humanized fill: route through the extension's Ceki.typeText (real
+      // keydown/keypress/keyup with per-key human timing, and the long-text
+      // clipboard-paste branch for big inputs) instead of a bare el.value
+      // set — so `action fill[N]` carries the same anti-bot disguise as
+      // `ceki type`. The graph node's selector focuses the target element.
+      try {
+        await this.type(nodeValue, { selector: selector as string, human: true });
+        skipEval = true;
+      } catch {
+        // fallback: direct value set + input/change so frameworks hear it
+        const qs = JSON.stringify(selector);
+        const v = JSON.stringify(nodeValue);
+        expr =
+          `(function(){var el=document.querySelector(${qs});if(!el)return{ok:false,error:'no element'};` +
+          `el.focus();el.value=${v};` +
+          `el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));` +
+          `return{ok:true,value:el.value};})()`;
+      }
     } else if (nodeAction === 'click') {
       const qs = JSON.stringify(selector);
       expr = `(function(){var el=document.querySelector(${qs});if(!el)return{ok:false,error:'no element'};` +
@@ -572,17 +581,19 @@ export class Browser {
       throw new Error(`act: unsupported action ${nodeAction!}`);
     }
 
-    const resp = await this.send({
-      method: 'Runtime.evaluate',
-      params: { expression: expr, returnByValue: true },
-    }, timeout) as Record<string, unknown>;
-    const result = (resp?.result ?? {}) as Record<string, unknown>;
-    if (resp?.exceptionDetails) {
-      throw new Error(`act: JS error on ${node!}: ${String((resp.exceptionDetails as {exception?: {description?: string}}).exception?.description ?? resp.exceptionDetails)}`);
-    }
-    const val = result.value;
-    if (val && typeof val === 'object' && (val as {ok?: boolean}).ok === false) {
-      throw new Error(`act: could not act on ${node!}: ${String((val as {error?: string}).error)}`);
+    if (!skipEval && expr != null) {
+      const resp = await this.send({
+        method: 'Runtime.evaluate',
+        params: { expression: expr, returnByValue: true },
+      }, timeout) as Record<string, unknown>;
+      const result = (resp?.result ?? {}) as Record<string, unknown>;
+      if (resp?.exceptionDetails) {
+        throw new Error(`act: JS error on ${node!}: ${String((resp.exceptionDetails as {exception?: {description?: string}}).exception?.description ?? resp.exceptionDetails)}`);
+      }
+      const val = result.value;
+      if (val && typeof val === 'object' && (val as {ok?: boolean}).ok === false) {
+        throw new Error(`act: could not act on ${node!}: ${String((val as {error?: string}).error)}`);
+      }
     }
 
     // Diff: re-render and compare.
