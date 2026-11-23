@@ -569,6 +569,20 @@ export class WebRTCTransport {
    */
   async setRemoteDescription(sdp: string, type: 'offer' | 'answer' = 'answer'): Promise<void> {
     const pc = await this._ensurePc();
+
+    // Cold-start retry race guard: _initP2P rebuilds the transport (fresh pc)
+    // on a 15s cadence and re-issues the offer until the DC opens. A late
+    // webrtc.answer from the *previous* offer can land on the *new* pc after
+    // it already completed the exchange (signalingState === 'stable'). Setting
+    // an answer then throws InvalidStateError: "Called in wrong state: stable".
+    // Ignore stale answers — the current offer is still waiting on its own
+    // answer, which carries the same DTLS fingerprint.
+    const state = pc.signalingState;
+    if (type === 'answer' && state === 'stable') {
+      console.warn('[p2p-diag] setRemoteDescription: stale answer ignored (signalingState=stable)');
+      return;
+    }
+
     const remoteDesc = new RTCSessionDescription({ sdp, type });
     await pc.setRemoteDescription(remoteDesc);
 
