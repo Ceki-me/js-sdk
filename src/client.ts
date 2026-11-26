@@ -540,6 +540,7 @@ export class Client {
 
     const type = String(msg.type ?? '');
     const sessionId = msg.session_id ? String(msg.session_id) : null;
+    const sid = msg.session_id != null ? String(msg.session_id) : msg.event_id != null ? String(msg.event_id) : null;
 
     switch (type) {
       case 'pong':
@@ -592,8 +593,11 @@ export class Client {
         break;
 
       case 'session.ended':
-        if (sessionId) {
-          const browser = this._activeBrowsers.get(sessionId);
+      case 'session_ended':
+      case 'session_end':
+        // Relay may send session_id or event_id (both equal session.id on match).
+        if (sid) {
+          const browser = this._activeBrowsers.get(sid);
           browser?._onSessionEnded(msg);
         }
         break;
