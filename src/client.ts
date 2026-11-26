@@ -583,6 +583,7 @@ export class Client {
 
     const type = String(msg.type ?? '');
     const sessionId = msg.session_id ? String(msg.session_id) : null;
+    const sid = msg.session_id != null ? String(msg.session_id) : msg.event_id != null ? String(msg.event_id) : null;
 
     switch (type) {
       case 'pong':
@@ -613,6 +614,10 @@ export class Client {
         this._onAttachOk(msg);
         break;
 
+      case 'attach_failed':
+        this._onAttachFailed(msg);
+        break;
+
       case 'cdp_response':
         if (sessionId) {
           const browser = this._activeBrowsers.get(sessionId);
@@ -635,8 +640,11 @@ export class Client {
         break;
 
       case 'session.ended':
-        if (sessionId) {
-          const browser = this._activeBrowsers.get(sessionId);
+      case 'session_ended':
+      case 'session_end':
+        // Relay may send session_id or event_id (both equal session.id on match).
+        if (sid) {
+          const browser = this._activeBrowsers.get(sid);
           browser?._onSessionEnded(msg);
         }
         break;
@@ -876,6 +884,17 @@ export class Client {
     };
 
     pending.resolve(match);
+  }
+
+  private _onAttachFailed(msg: Record<string, unknown>): void {
+    const scheduleId = Number(msg.schedule_id ?? 0);
+    const reason = String(msg.reason ?? 'attach_failed');
+    const pending = this._pendingAttaches.get(scheduleId);
+    if (!pending) return;
+
+    clearTimeout(pending.timer);
+    this._pendingAttaches.delete(scheduleId);
+    pending.reject(new CekiBrowserError(reason));
   }
 
   private _onError(msg: Record<string, unknown>): void {

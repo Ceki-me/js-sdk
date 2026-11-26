@@ -25,6 +25,7 @@ import {
   SessionExpired,
   NotOwner,
   SessionNotFound,
+  SessionEnded,
 } from '../src/errors.js';
 
 beforeEach(() => {
@@ -377,6 +378,74 @@ describe('close()', () => {
 
     await client.close();
     expect(ws.readyState).toBe(3);
+  });
+});
+
+describe('session_ended dispatch', () => {
+  it('resolves waitUntilEnded and throws SessionEnded when relay sends session_ended with event_id', async () => {
+    const client = await createClient();
+    const ws = MockWebSocket.last();
+
+    // Rent a browser. Relay match frame carries both session_id and event_id
+    // (both equal session.id).
+    const rentPromise = client.rent(1);
+    // Relay match frame: session_id and event_id both equal session.id.
+    ws.receive({ type: 'rent_pending', event_id: 's1' });
+    ws.receive({ type: 'match', event_id: 's1', schedule_id: 1, session_id: 's1' });
+    const browser = await rentPromise;
+
+    // Relay closes the session: it sends ONLY event_id (== session_id), no session_id field.
+    ws.receive({
+      type: 'session_ended',
+      event_id: 's1',
+      reason: 'backend_closed',
+    });
+
+    // waitUntilEnded() resolves immediately with the reason (no timeout).
+    await expect(browser.waitUntilEnded()).resolves.toBe('backend_closed');
+
+    // A subsequent CDP call throws SessionEnded instantly, not a 20s timeout.
+    const sendPromise = browser.send({ method: 'Page.navigate', params: {} }).catch(e => e);
+    await vi.advanceTimersByTimeAsync(25_000);
+    const err = await sendPromise;
+    expect(err).toBeInstanceOf(SessionEnded);
+    expect((err as Error).message).toContain('backend_closed');
+  });
+
+  it('handles session_end alias with event_id', async () => {
+    const client = await createClient();
+    const ws = MockWebSocket.last();
+
+    const rentPromise = client.rent(2);
+    ws.receive({ type: 'rent_pending', event_id: 's2' });
+    ws.receive({ type: 'match', event_id: 's2', schedule_id: 2, session_id: 's2' });
+    const browser = await rentPromise;
+
+    ws.receive({
+      type: 'session_end',
+      event_id: 's2',
+      reason: 'user_stop',
+    });
+
+    await expect(browser.waitUntilEnded()).resolves.toBe('user_stop');
+  });
+});
+
+describe('attach_failed dispatch', () => {
+  it('rejects join() immediately when relay sends attach_failed', async () => {
+    const client = await createClient();
+    const ws = MockWebSocket.last();
+
+    const joinPromise = client.join(7);
+    // Relay rejects the attach with a reason.
+    ws.receive({ type: 'attach_failed', schedule_id: 7, reason: 'provider_not_connected' });
+
+    await expect(joinPromise).rejects.toBeInstanceOf(CekiBrowserError);
+    await expect(joinPromise).rejects.toThrow('provider_not_connected');
+
+    // No 90s hang: advancing fake timers doesn't change the outcome.
+    await vi.advanceTimersByTimeAsync(90_000);
+    await expect(joinPromise).rejects.toThrow('provider_not_connected');
   });
 });
 
