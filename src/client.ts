@@ -571,6 +571,10 @@ export class Client {
         this._onAttachOk(msg);
         break;
 
+      case 'attach_failed':
+        this._onAttachFailed(msg);
+        break;
+
       case 'cdp_response':
         if (sessionId) {
           const browser = this._activeBrowsers.get(sessionId);
@@ -837,6 +841,17 @@ export class Client {
     };
 
     pending.resolve(match);
+  }
+
+  private _onAttachFailed(msg: Record<string, unknown>): void {
+    const scheduleId = Number(msg.schedule_id ?? 0);
+    const reason = String(msg.reason ?? 'attach_failed');
+    const pending = this._pendingAttaches.get(scheduleId);
+    if (!pending) return;
+
+    clearTimeout(pending.timer);
+    this._pendingAttaches.delete(scheduleId);
+    pending.reject(new CekiBrowserError(reason));
   }
 
   private _onError(msg: Record<string, unknown>): void {

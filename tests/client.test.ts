@@ -431,6 +431,24 @@ describe('session_ended dispatch', () => {
   });
 });
 
+describe('attach_failed dispatch', () => {
+  it('rejects join() immediately when relay sends attach_failed', async () => {
+    const client = await createClient();
+    const ws = MockWebSocket.last();
+
+    const joinPromise = client.join(7);
+    // Relay rejects the attach with a reason.
+    ws.receive({ type: 'attach_failed', schedule_id: 7, reason: 'provider_not_connected' });
+
+    await expect(joinPromise).rejects.toBeInstanceOf(CekiBrowserError);
+    await expect(joinPromise).rejects.toThrow('provider_not_connected');
+
+    // No 90s hang: advancing fake timers doesn't change the outcome.
+    await vi.advanceTimersByTimeAsync(90_000);
+    await expect(joinPromise).rejects.toThrow('provider_not_connected');
+  });
+});
+
 describe('disconnect()', () => {
   it('closes WS without sending session.end', async () => {
     const client = await createClient();
